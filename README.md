@@ -4,7 +4,7 @@
 
 # RetChat
 
-**Read live chat from Twitch, Kick, YouTube, Aparat and OneFa in one window, show it as an overlay on your game or stream, and let your chat press keys in your game.**
+**Read live chat from Twitch, Kick, YouTube, Aparat (kos madarashun) and OneFa in one window, show it as an overlay on your game or stream, and let your chat press keys in your game.**
 
 Made by **DrPlague** and **R3sTivE** · Watch R3sTivE on Kick: **[kick.com/r3stive](https://kick.com/r3stive)**
 
