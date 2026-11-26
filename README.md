@@ -4,7 +4,7 @@
 
 # RetChat
 
-**Read live chat from Twitch, Kick, YouTube, Aparat and OneFa in one window, and let your chat press keys in your game.**
+**Read live chat from Twitch, Kick, YouTube, Aparat and OneFa in one window, show it as an overlay on your game or stream, and let your chat press keys in your game.**
 
 Made by **DrPlague** and **R3sTivE** · Watch R3sTivE on Kick: **[kick.com/r3stive](https://kick.com/r3stive)**
 
@@ -17,6 +17,7 @@ Made by **DrPlague** and **R3sTivE** · Watch R3sTivE on Kick: **[kick.com/r3sti
 ## Contents
 
 - [Features](#features)
+- [🎮 Use it as an overlay](#overlay)
 - [Privacy: RetChat does not send your data anywhere](#privacy)
 - [Supported platforms](#supported-platforms)
 - [Download and run](#download-and-run)
@@ -44,6 +45,31 @@ Made by **DrPlague** and **R3sTivE** · Watch R3sTivE on Kick: **[kick.com/r3sti
 - **Overlay and OBS**: a transparent always-on-top chat window, and a web page you add to OBS as a Browser source (even from another PC).
 - **Proxy per channel** for networks where some sites are blocked.
 - **English and Persian** interface, with right-to-left support everywhere.
+
+<a id="overlay"></a>
+## 🎮 Use it as an overlay
+
+**RetChat is made to be used as a chat overlay**, both on your own screen while you play and on your stream.
+
+![RetChat as an overlay on top of a game](docs/overlay.png)
+
+<sub>Example: RetChat's overlay on top of a game (the game scene is made up for this picture).</sub>
+
+**1. On your screen, on top of your game**
+- Click **⧉ Overlay** (top right of the chat). A transparent chat window opens that always stays on top of other windows, including your game.
+- Drag it where you want it and resize it from the bottom-right corner.
+- Click **🔓** to **lock** it: the overlay becomes **click-through**, so your mouse clicks go to the game underneath. Click **🔒** in the main window to unlock it again.
+- Run the game in **windowed** or **borderless (fullscreen windowed)** mode. Exclusive fullscreen hides every window on top of the game.
+
+**2. On your stream (OBS)**
+- In **Appearance → OBS browser source**, tick **Serve chat as a web page** and copy a link.
+- In OBS: **Sources → + → Browser**, paste the link. The background is transparent, so only the messages and bars appear on top of your stream. See [OBS](#obs) for details, including OBS on another PC.
+
+**Tips for a good-looking overlay**
+- **Theme → Glass** (see-through messages) and **Chat area opacity 0%**, so only the messages are visible.
+- **Messages shown: 5** and/or **Fade out after: 10 s**, so the chat doesn't cover your game.
+- **New message: Slide in from its side**, **Glow on trigger messages** and **Emoji rain** make chat reactions visible to viewers.
+- Trigger **progress bars** appear at the top of the overlay and glow when a trigger fires.
 
 <a id="privacy"></a>
 ## Privacy: RetChat does not send your data anywhere
