@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import sys
 import time
 from collections import deque
@@ -31,14 +32,15 @@ import theme
 from i18n import T, translate_tree
 from binding_dialog import BindingDialog
 from bindings import DEFAULT_BOTS, Binding, BindingManager, bot_names, is_bot
-from chat_view import FX_ROLES, ChatStyle, ChatView, _readable, effect_for, rain_symbol
+from chat_view import FX_ROLES, ChatStyle, ChatView, ScreenRain, _readable, effect_for, rain_symbol
+from input_block import InputBlocker
 from obs_server import ObsServer
 from progress import GlowBar, ProgressStrip
 from connectors import PLATFORM_NAMES, PLATFORMS, ChatHub, Target, parse_target, proxy_label, resolve_proxy
 from images import BADGE_STYLE, ImageCache, _logo_path, all_badge_kinds, badge_icon, platform_icon
 
 APP_NAME = "RetChat"
-VERSION = "3.4"
+VERSION = "3.5"
 SETTINGS = Path.home() / ".retchat2_settings.json"
 # Theme presets (Appearance ▸ Theme): message text, name, message box, name tab, border, chat area
 def _theme(text, user, bubble, name_bg, border, bg="#12131a", alpha=0.88):
@@ -120,6 +122,7 @@ class Bridge(QObject):
     key_result = pyqtSignal(str, bool, str)
     proxy_result = pyqtSignal(bool, str)
     obs_result = pyqtSignal(bool, str)
+    block_state = pyqtSignal(str)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -283,10 +286,10 @@ class BindingRow(QFrame):
         self.word = label(b.word, "wordChip")
         top.addWidget(self.word)
         top.addWidget(label("→", muted=True))
-        self.key = label(b.key, "keyChip")
+        self.key = label(b.action_text(), "keyChip")
         top.addWidget(self.key)
         top.addStretch()
-        top.addWidget(button("▶", lambda: on_test(self), "ghost", "Test: press this key in 3 s"))
+        top.addWidget(button("▶", lambda: on_test(self), "ghost", "Test: run this trigger in 3 s"))
         top.addWidget(button("✎", lambda: on_edit(self), "ghost", "Edit"))
         top.addWidget(button("✕", lambda: on_delete(self), "ghost", "Delete"))
         v.addLayout(top)
@@ -306,7 +309,7 @@ class BindingRow(QFrame):
     def refresh(self):
         b = self.b
         self.word.setText(b.word)
-        self.key.setText(b.key)
+        self.key.setText(b.action_text())
         self.bar.set_color(b.color)
         self.bar.set_progress(b.acc, b.threshold)
         cd = b.cooling()
@@ -402,6 +405,9 @@ class MainWindow(QMainWindow):
         self.bridge.obs_result.connect(self.on_obs_result)
         self.hub = ChatHub(self.bridge.message.emit, self.bridge.status.emit)
         self.sender = isend.InputSender(self.bridge.key_result.emit)
+        self.blocker = InputBlocker(self.bridge.block_state.emit)
+        self.bridge.block_state.connect(self._on_block_state)
+        self._shutdown_box = None
         self.images = ImageCache(self)
         self.style_ = ChatStyle()
         self.bm = BindingManager()
@@ -414,6 +420,7 @@ class MainWindow(QMainWindow):
         self._bind_widgets: List[QWidget] = []
         self.exclusive_groups = False
         self.overlay: Optional[OverlayWindow] = None
+        self.screen_rain: Optional[ScreenRain] = None    # full-screen emoji rain window
         self._rate: deque = deque(maxlen=600)
 
         self._build()
@@ -823,6 +830,27 @@ class MainWindow(QMainWindow):
         v.addWidget(self.rain_trig_cb)
         self.rain_amt_sl, self.rain_amt_lbl = pct_slider("Amount", "rain_amount", 5, 120, 1, "")
         self.rain_cd_sl, self.rain_cd_lbl = pct_slider("Wait between rains", "rain_cooldown", 0, 60, 1, "s")
+        rs = QHBoxLayout()
+        self.rain_screen_cb = QCheckBox("Also rain over the whole screen")
+        self.rain_screen_cb.setToolTip("Drops fall over your whole monitor, on top of every window (click-through).\n"
+                                       "Works over games in borderless / windowed mode, not exclusive full screen.")
+        self.rain_screen_cb.toggled.connect(lambda on: (self._set("rain_screen", on),
+                                                        self.rain_mon_box.setEnabled(on)))
+        rs.addWidget(self.rain_screen_cb)
+        self.rain_mon_box = QComboBox()
+        self.rain_mon_box.setProperty("noTranslate", True)
+        for i_, scr in enumerate(QApplication.screens()):
+            g_ = scr.geometry()
+            self.rain_mon_box.addItem(f"{i_ + 1}: {g_.width()}×{g_.height()}", i_)
+        self.rain_mon_box.currentIndexChanged.connect(
+            lambda i: self._set("rain_screen_monitor", int(self.rain_mon_box.itemData(i) or 0)))
+        rs.addWidget(self.rain_mon_box)
+        rs.addWidget(button("Test", self._test_rain, tip="Drop a test rain now"))
+        rs.addStretch()
+        v.addLayout(rs)
+        self.rain_obs_cb = QCheckBox("Rain on the OBS chat page too (the OBS \"Rain only\" page always rains)")
+        self.rain_obs_cb.toggled.connect(lambda on: (self._set("rain_obs_chat", on), self._obs_config()))
+        v.addWidget(self.rain_obs_cb)
         v.addSpacing(8)
 
         v.addWidget(label("Special effects", "h2"))
@@ -927,7 +955,7 @@ class MainWindow(QMainWindow):
 
         self.obs_links = {}
         for key, text, q in (("all", "Chat + bars", ""), ("chat", "Chat only", "?bars=0"),
-                             ("bars", "Bars only", "?chat=0")):
+                             ("bars", "Bars only", "?chat=0"), ("rain", "Rain only", "?rain=only")):
             r = QHBoxLayout()
             l = label(text)
             l.setFixedWidth(90)
@@ -941,7 +969,8 @@ class MainWindow(QMainWindow):
             v.addLayout(r)
             self.obs_links[key] = (url, q)
         self.obs_status = label("In OBS add a Browser source, paste the URL, size e.g. 400×600. "
-                                "Add &fade=30 to hide messages after 30 s.", muted=True)
+                                "Add &fade=30 to hide messages after 30 s. For \"Rain only\" use the full "
+                                "canvas size (e.g. 1920×1080) so the emoji rain covers the whole stream.", muted=True)
         self.obs_status.setWordWrap(True)
         v.addWidget(self.obs_status)
         self._refresh_obs_links()
@@ -953,7 +982,7 @@ class MainWindow(QMainWindow):
         st = self.style_
         extra = (self.layout_box, self.bub_sl, self.ns_sl, self.rad_sl, self.bw_sl, self.anim_box, self.fade_spin,
                  self.rain_cb, self.rain_trig_cb,
-                 self.rain_amt_sl, self.rain_cd_sl)
+                 self.rain_amt_sl, self.rain_cd_sl, self.rain_screen_cb, self.rain_mon_box, self.rain_obs_cb)
         for w in (self.font_box, self.size_sl, self.alpha_sl, self.dir_box, self.max_spin,
                   self.barh_sl, self.barf_sl, *extra, *self.checks.values()):
             w.blockSignals(True)
@@ -968,6 +997,10 @@ class MainWindow(QMainWindow):
         self.rain_amt_lbl.setText(str(st.rain_amount))
         self.rain_cd_sl.setValue(int(st.rain_cooldown))
         self.rain_cd_lbl.setText(f"{int(st.rain_cooldown)}s")
+        self.rain_screen_cb.setChecked(st.rain_screen)
+        self.rain_mon_box.setEnabled(st.rain_screen)
+        self.rain_mon_box.setCurrentIndex(max(0, self.rain_mon_box.findData(st.rain_screen_monitor)))
+        self.rain_obs_cb.setChecked(st.rain_obs_chat)
         self.bw_sl.setValue(st.border_width)
         self.bw_lbl.setText(f"{st.border_width}px")
         self.anim_box.setCurrentIndex(max(0, self.anim_box.findData(st.anim_in)))
@@ -1113,7 +1146,7 @@ class MainWindow(QMainWindow):
         cfg["bubble_rgba"] = f"rgba({bc.red()},{bc.green()},{bc.blue()},{st.bubble_alpha:.2f})"
         cfg.update(layout=st.layout, radius=st.radius, show_time=st.show_time, anim_in=st.anim_in,
                    fade_after=st.fade_after, border_width=st.border_width, border_color=st.border_color,
-                   name_scale=st.name_scale, show_avatars=st.show_avatars)
+                   name_scale=st.name_scale, show_avatars=st.show_avatars, rain_in_chat=st.rain_obs_chat)
         nc = QColor(st.name_bg)
         cfg["name_rgba"] = f"rgba({nc.red()},{nc.green()},{nc.blue()},{st.bubble_alpha:.2f})"
         self.obs.publish("config", cfg)
@@ -1294,6 +1327,9 @@ class MainWindow(QMainWindow):
                 self.obs.publish("avatar", {"user_key": msg["user_key"], "avatar": msg["avatar"],
                                             "proxy": msg.get("proxy") or ""})
             return
+        if msg.get("type") == "delete":                 # a moderator deleted / banned / cleared
+            self._on_delete(msg)
+            return
         row = self.rows.get(msg.get("source", ""))
         if row is None or row.state == "stopped":
             return                                  # late message from a stopped channel
@@ -1321,11 +1357,35 @@ class MainWindow(QMainWindow):
                 self.obs.publish("celebrate", {"id": str(id(b))})
             who = msg.get("username", "?")
             if self.triggers_on:
-                self.sender.press(b.key, b.hold_ms, b.repeat)
-                self.log_activity(T("🔑 '{word}' reached {n} → pressing {key}  (last: {who})").format(
-                    word=b.word, n=b.threshold, key=b.key, who=who))
+                self.run_action(b)
+                self.log_activity(T("🔑 '{word}' reached {n} → {key}  (last: {who})").format(
+                    word=b.word, n=b.threshold, key=b.action_text(), who=who))
             else:
                 self.log_activity(T("⏸ '{word}' reached {n} but triggers are paused").format(word=b.word, n=b.threshold))
+
+    def _on_delete(self, ev: dict):
+        """Remove messages a moderator deleted from the app, the overlay and OBS."""
+        src = ev.get("source", "")
+        ids = set(ev.get("ids") or [])
+        uk, uid, every = ev.get("user_key") or "", ev.get("uid") or "", bool(ev.get("all"))
+
+        def gone(m: dict) -> bool:
+            if m.get("system") or m.get("source") != src:
+                return False
+            return (every or str(m.get("id", "")) in ids
+                    or (uk and m.get("user_key") == uk) or (uid and str(m.get("uid", "")) == uid))
+
+        hit = [m for m in self.messages if gone(m)]
+        if not hit:
+            return
+        keep = [m for m in self.messages if not gone(m)]
+        self.messages.clear()
+        self.messages.extend(keep)
+        self.view.remove_messages(gone)
+        if self.overlay:
+            self.overlay.view.remove_messages(gone)
+        if self.obs_cb.isChecked():
+            self.obs.publish("delete", {"ids": [f"{src}|{m.get('id', '')}" for m in hit]})
 
     def _maybe_rain(self, msg: dict):
         st = self.style_
@@ -1341,11 +1401,22 @@ class MainWindow(QMainWindow):
             return
         self._last_rain = now
         proxy = msg.get("proxy") or None
+        self._rain_everywhere(sym, proxy)
+
+    def _rain_everywhere(self, sym: dict, proxy=None):
+        st = self.style_
         self.view.rain(sym, proxy)
         if self.overlay:
             self.overlay.view.rain(sym, proxy)
+        if st.rain_screen:
+            if self.screen_rain is None:
+                self.screen_rain = ScreenRain(self.images)
+            self.screen_rain.rain(sym, st.rain_amount, proxy, st.rain_screen_monitor)
         if self.obs_cb.isChecked():
             self.obs.publish("rain", {**sym, "amount": st.rain_amount})
+
+    def _test_rain(self):
+        self._rain_everywhere({"emoji": random.choice(["🎉", "🔥", "😂", "❤️", "⭐", "🍕", "👑", "💎"])})
 
     def on_key_result(self, key: str, ok: bool, err: str):
         if ok:
@@ -1491,7 +1562,7 @@ class MainWindow(QMainWindow):
     def add_binding(self, group: Optional[str] = None):
         self.bm.ensure_groups()
         d = BindingDialog(None, self.sender, self, groups=list(self.bm.groups),
-                          group=group or self._default_group())
+                          group=group or self._default_group(), run_action=self.run_action)
         if d.exec():
             nb = d.binding()
             if nb.group not in self.bm.groups:          # typed a new group name
@@ -1501,7 +1572,7 @@ class MainWindow(QMainWindow):
             self.save_settings()
 
     def edit_binding(self, row: BindingRow):
-        d = BindingDialog(row.b, self.sender, self, groups=list(self.bm.groups))
+        d = BindingDialog(row.b, self.sender, self, groups=list(self.bm.groups), run_action=self.run_action)
         if d.exec():
             i = self.bm.bindings.index(row.b)
             nb = d.binding()
@@ -1514,7 +1585,7 @@ class MainWindow(QMainWindow):
 
     def delete_binding(self, row: BindingRow):
         if QMessageBox.question(self, T("Delete trigger"),
-                                T("Delete the trigger '{word}' → {key}?").format(word=row.b.word, key=row.b.key)) \
+                                T("Delete the trigger '{word}' → {key}?").format(word=row.b.word, key=row.b.action_text())) \
                 == QMessageBox.StandardButton.Yes:
             self.bm.bindings.remove(row.b)
             self.rebuild_bindings()
@@ -1527,8 +1598,75 @@ class MainWindow(QMainWindow):
 
     def test_binding(self, row: BindingRow):
         b = row.b
-        self.log_activity(T("Test: pressing {key} in 3 s – switch to your game now").format(key=b.key))
-        QTimer.singleShot(3000, lambda: self.sender.press(b.key, b.hold_ms, b.repeat))
+        if b.action == "shutdown":
+            self.log_activity(T("Shut down triggers can't be tested (it would shut down the PC)"))
+            return
+        self.log_activity(T("Test: {key} in 3 s – switch to your game now").format(key=b.action_text()))
+        QTimer.singleShot(3000, lambda: self.run_action(b))
+
+    # ── trigger actions ──────────────────────────────────────────────────────
+    def run_action(self, b: Binding):
+        """Do what a fired trigger is set to do (press / block / shut down)."""
+        a = b.action
+        try:
+            if a == "block_key":
+                self.blocker.block_keys(b.key, b.duration)
+            elif a == "block_keyboard":
+                self.blocker.block_keyboard(b.duration)
+            elif a == "block_mouse":
+                self.blocker.block_mouse(b.duration)
+            elif a == "shutdown":
+                self._schedule_shutdown(int(max(10, b.duration)), b.word)
+            else:
+                self.sender.press(b.key, b.hold_ms, b.repeat)
+        except Exception as exc:
+            self.log_activity(f"✗ {b.action_text()}: {exc}", error=True)
+
+    def _on_block_state(self, state: str):
+        if state == "blocking":
+            self.last_lbl.setText(T("⛔ Blocking input: {what}  ·  press Esc 5× to unblock").format(
+                what=self.blocker.describe() or "…"))
+            if isend.foreground_is_elevated() and not isend.is_admin():
+                self.log_activity(T("✗ The focused app runs as administrator – Windows doesn't let RetChat block "
+                                    "its input. Restart RetChat as administrator."), error=True)
+        elif state == "unblocked":
+            self.log_activity(T("✓ Esc pressed 5× – all input unblocked"))
+        elif state == "ended":
+            self.last_lbl.setText(T("✓ Input unblocked at {t}").format(t=time.strftime('%H:%M:%S')))
+        elif state == "error":
+            self.log_activity(T("✗ Could not block input (Windows refused the input hook)"), error=True)
+
+    def _schedule_shutdown(self, secs: int, word: str):
+        import subprocess
+        if self._shutdown_box is not None:
+            return                                        # one is already counting down
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        r = subprocess.run(["shutdown", "/s", "/t", str(secs), "/c",
+                            f"RetChat: chat trigger '{word}' – shutting down in {secs} s"],
+                           capture_output=True, creationflags=flags)
+        if r.returncode != 0:
+            self.log_activity(T("✗ Shut down failed: {e}").format(
+                e=(r.stderr or r.stdout or b"").decode(errors="replace").strip() or r.returncode), error=True)
+            return
+        self.log_activity(T("⏻ Shutting down the PC in {s} s (trigger '{word}')").format(s=secs, word=word),
+                          error=True)
+        box = QMessageBox(QMessageBox.Icon.Warning, "RetChat",
+                          T("A chat trigger ('{word}') is shutting down this PC in {s} seconds.").format(
+                              word=word, s=secs), parent=self)
+        cancel = box.addButton(T("Cancel shut down"), QMessageBox.ButtonRole.RejectRole)
+        box.addButton(T("Let it shut down"), QMessageBox.ButtonRole.AcceptRole)
+        box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        box.setModal(False)
+        self._shutdown_box = box
+
+        def done(_):
+            self._shutdown_box = None
+            if box.clickedButton() is cancel:
+                subprocess.run(["shutdown", "/a"], capture_output=True, creationflags=flags)
+                self.log_activity(T("✓ Shut down cancelled"))
+        box.finished.connect(done)
+        box.show()
+        box.raise_()
 
     def reset_points(self):
         for b in self.bm.bindings:
@@ -1588,7 +1726,11 @@ class MainWindow(QMainWindow):
         self.save_settings()
         import subprocess
         args = sys.argv[1:] if getattr(sys, "frozen", False) else sys.argv
-        subprocess.Popen([sys.executable] + args)
+        # The one-file exe unpacks itself to a temp folder that is deleted when this copy closes.
+        # Without this flag the new copy would reuse that folder and fail with
+        # "no Qt platform plugin could be initialized" once it disappears.
+        env = dict(os.environ, PYINSTALLER_RESET_ENVIRONMENT="1")
+        subprocess.Popen([sys.executable] + args, env=env, close_fds=True)
         self.close()
         QApplication.quit()
 

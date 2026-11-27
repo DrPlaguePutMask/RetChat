@@ -13,6 +13,16 @@ ROLE_LABELS = {"moderator": "Moderator", "subscription": "Subscriber",
                "vip": "VIP", "regular": "Regular"}
 DEFAULT_WEIGHTS = {"moderator": 100, "subscription": 75, "vip": 50, "regular": 25}
 
+# what happens when a trigger fires
+ACTIONS = {
+    "press":          "Press a key",
+    "block_key":      "Block keys (they stop working for a while)",
+    "block_keyboard": "Block the whole keyboard",
+    "block_mouse":    "Block the mouse (movement, buttons, wheel)",
+    "shutdown":       "Shut down the PC",
+}
+ACTION_ICONS = {"press": "", "block_key": "⛔", "block_keyboard": "⛔⌨", "block_mouse": "⛔🖱", "shutdown": "⏻"}
+
 MATCH_MODES = {
     "exact":    "Whole message equals the word",
     "word":     "Message contains the word",
@@ -52,6 +62,8 @@ class Binding:
     color: str = "#7c5cff"         # progress bar / glow colour
     show_key: bool = True          # show "→ key" on the progress bar
     group: str = "General"         # e.g. "CS GO", "Valorant"
+    action: str = "press"          # see ACTIONS
+    duration: float = 5.0          # seconds a block lasts / delay before shutdown
 
     # runtime state (not saved)
     acc: int = field(default=0, init=False, repr=False)
@@ -79,9 +91,19 @@ class Binding:
     def bar_label(self) -> str:
         """Text on the progress bar, e.g. 'shot  →  MouseLeft    3 / 10' (key optional)."""
         cd = self.cooling()
-        name = f"{self.word}  →  {self.key}" if self.show_key else self.word
+        name = f"{self.word}  →  {self.action_text()}" if self.show_key else self.word
         from i18n import T
         return f"{name}    " + (T("cooldown {s}s").format(s=f"{cd:.0f}") if cd else f"{self.acc} / {self.threshold}")
+
+    def action_text(self) -> str:
+        """Short description of what firing does, e.g. 'MouseLeft', '⛔ W 5s', '⏻ 30s'."""
+        a = self.action if self.action in ACTIONS else "press"
+        secs = f"{self.duration:g}s"
+        if a == "press":
+            return self.key
+        if a == "block_key":
+            return f"⛔ {self.key} {secs}"
+        return f"{ACTION_ICONS[a]} {secs}"
 
     def cooling(self) -> float:
         left = self.cooldown - (time.time() - self.last_fire)
@@ -93,7 +115,7 @@ class Binding:
                 "cooldown": self.cooldown, "unique_users": self.unique_users, "hold_ms": self.hold_ms,
                 "repeat": self.repeat, "enabled": self.enabled, "show_progress": self.show_progress,
                 "show_key": self.show_key, "group": self.group,
-                "color": self.color}
+                "color": self.color, "action": self.action, "duration": self.duration}
 
     @staticmethod
     def from_dict(d: dict) -> "Binding":
@@ -109,6 +131,8 @@ class Binding:
             color=d.get("color") or "#7c5cff",
             show_key=bool(d.get("show_key", True)),
             group=(d.get("group") or "General").strip() or "General",
+            action=d.get("action") if d.get("action") in ACTIONS else "press",
+            duration=max(0.2, float(d.get("duration", 5.0))),
         )
 
 

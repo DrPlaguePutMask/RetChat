@@ -453,6 +453,12 @@ class BaseConnector:
             msg["text"] = _text_of(msg.get("parts", []))
         self._emit(msg)
 
+    def emit_delete(self, ids=None, user_key: str = "", uid: str = "", everything: bool = False):
+        """A moderator deleted messages: by message id, by user (ban/timeout) or the whole chat."""
+        self._emit({"type": "delete", "platform": self.platform, "source": self.target.key,
+                    "ids": [str(i) for i in ids or [] if i], "user_key": user_key or "",
+                    "uid": str(uid or ""), "all": everything})
+
     async def get_json(self, url, **kw):
         async with self.session.get(url, **kw) as r:
             if r.status == 404:
@@ -543,6 +549,17 @@ class TwitchConnector(BaseConnector):
                         await ws.send_str("PONG" + line[4:])
                     elif " PRIVMSG " in line:
                         self._on_privmsg(line)
+                    elif " CLEARMSG " in line:          # a moderator deleted one message
+                        m = re.search(r"(?:^@|;)target-msg-id=([^; ]+)", line)
+                        if m:
+                            self.emit_delete(ids=[m.group(1)])
+                    elif " CLEARCHAT " in line:         # ban / timeout (with a login) or /clear
+                        _, _, who = line.partition(" CLEARCHAT ")
+                        _, _, login = who.partition(" :")
+                        if login.strip():
+                            self.emit_delete(user_key=f"twitch:{login.strip().lower()}")
+                        else:
+                            self.emit_delete(everything=True)
                     elif " JOIN #" in line or " ROOMSTATE " in line:
                         self.set_status("live", "Connected")
                     elif " RECONNECT" in line:
@@ -751,10 +768,29 @@ class KickConnector(BaseConnector):
         return best or (self.sub_badges[0][1] if self.sub_badges else None)
 
     def _on_event(self, event: str, data):
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except ValueError:
+                return
+        if not isinstance(data, dict):
+            data = {}
+        if event.endswith("MessageDeletedEvent"):      # a moderator deleted one message
+            mid = (data.get("message") or {}).get("id") or data.get("id")
+            if mid:
+                self.emit_delete(ids=[mid])
+            return
+        if event.endswith("UserBannedEvent"):          # ban / timeout removes the user's messages
+            u = data.get("user") or {}
+            slug = (u.get("slug") or u.get("username") or "").lower()
+            if slug:
+                self.emit_delete(user_key=f"kick:{slug}")
+            return
+        if event.endswith("ChatroomClearEvent"):
+            self.emit_delete(everything=True)
+            return
         if not event.endswith("ChatMessageEvent"):
             return
-        if isinstance(data, str):
-            data = json.loads(data)
         sender = data.get("sender") or {}
         ident = sender.get("identity") or {}
         badges, types = [], set()
@@ -893,6 +929,16 @@ class YouTubeConnector(BaseConnector):
             return None
 
     def _on_action(self, action: dict, history: bool):
+        for k in ("markChatItemAsDeletedAction", "removeChatItemAction"):
+            if k in action:                             # a moderator deleted one message
+                self.emit_delete(ids=[(action[k] or {}).get("targetItemId")])
+                return
+        for k in ("markChatItemsByAuthorAsDeletedAction", "removeChatItemByAuthorAction"):
+            if k in action:                             # ban / timeout removes the user's messages
+                uid = (action[k] or {}).get("externalChannelId")
+                if uid:
+                    self.emit_delete(uid=uid)
+                return
         item = (action.get("addChatItemAction") or {}).get("item") or {}
         r = item.get("liveChatTextMessageRenderer") or item.get("liveChatPaidMessageRenderer")
         if not r:
@@ -932,6 +978,7 @@ class YouTubeConnector(BaseConnector):
             "id": r.get("id") or uuid.uuid4().hex,
             "username": (r.get("authorName") or {}).get("simpleText", "?").lstrip("@"),
             "avatar": (((r.get("authorPhoto") or {}).get("thumbnails") or [{}])[-1]).get("url"),
+            "uid": r.get("authorExternalChannelId") or "",
             "parts": parts,
             "badges": badges,
             "role": _roles(is_mod, is_sub, False),
@@ -1030,6 +1077,7 @@ class AparatConnector(BaseConnector):
             "badges": sorted(((int(k), v) for k, v in (d.get("badge_data") or {}).items()
                               if str(k).isdigit()), key=lambda x: x[0]),
             "mods": {u.lower() for u in d.get("moderator_data") or []},
+            "admins": {str(u).lower() for u in d.get("admins") or []},     # Aparat staff
             "vips": {u.lower() for u in (vip if isinstance(vip, list) else str(vip).split(","))
                      if u},
             "streamer": self.target.channel.lower(),
@@ -1071,6 +1119,20 @@ class AparatConnector(BaseConnector):
         user = c.get("username") or "?"
         text = c.get("comment") or ""
         guid = c.get("guid") or uuid.uuid4().hex
+        # Aparat sends moderator commands as normal comments (same rules as aparat.com):
+        #   "/delete <id>"  – a moderator deleted a message (the command itself is never shown)
+        #   "/pm …"         – chat between the streamer and moderators only
+        #   "/private …"    – message from Aparat staff to moderators only
+        low = user.lower()
+        staff = low in self.info.get("admins", ())
+        moder = staff or low in self.info.get("mods", ()) or low == self.info.get("streamer")
+        if text.startswith("/delete") and moder:
+            m = re.match(r"^(\S+)\s(.+)$", text.strip())
+            if m:
+                self.emit_delete(ids=[m.group(2).strip()])
+            return
+        if (text.startswith("/pm") and moder) or (text.startswith("/private") and staff):
+            return
         reply = None
         m = re.match(r"^/replay\s+([\w-]+)\s*(.*)$", text, re.S)
         if m:
@@ -1148,6 +1210,13 @@ class OneFaConnector(BaseConnector):
                     asyncio.create_task(self._on_join(fut))
                 elif ev == "chat:msg" and isinstance(data, dict):
                     self._on_msg(data, history=False)
+                elif ev == "chat:deleted" and isinstance(data, dict):   # a moderator deleted a message
+                    self.emit_delete(ids=[data.get("id")])
+                elif ev == "chat:purged" and isinstance(data, dict):    # ban / timeout
+                    if data.get("userId") is not None:
+                        self.emit_delete(uid=data["userId"])
+                elif ev == "chat:cleared":
+                    self.emit_delete(everything=True)
                 elif ev == "chat:bot" and isinstance(data, dict):
                     self.emit({"id": str(data.get("id") or uuid.uuid4().hex),
                                "username": data.get("name") or "Bot",
@@ -1192,7 +1261,7 @@ class OneFaConnector(BaseConnector):
         return parts
 
     def _on_msg(self, m: dict, history: bool):
-        if m.get("audience", "public") != "public":
+        if m.get("audience", "public") != "public" or m.get("deleted"):
             return
         u = m.get("user") or {}
         badges = []
@@ -1231,6 +1300,7 @@ class OneFaConnector(BaseConnector):
             "id": str(m.get("id") or uuid.uuid4().hex),
             "username": u.get("name") or u.get("username") or "?",
             "user_key": f"onefa:{(u.get('username') or '').lower()}",
+            "uid": str(u.get("id") or ""),
             "avatar": self._abs(u.get("avatar")),
             "color": u.get("color"),
             "parts": self._split(m.get("text") or ""),
@@ -1330,6 +1400,9 @@ if __name__ == "__main__":
     def _msg(m):
         if m.get("type") == "avatar":
             counts["avatars:" + m["platform"]] = counts.get("avatars:" + m["platform"], 0) + 1
+            return
+        if m.get("type") == "delete":
+            print(f"[{m['source']}] DELETE ids={m['ids']} user={m['user_key']} uid={m['uid']} all={m['all']}")
             return
         counts[m["source"]] = counts.get(m["source"], 0) + 1
         b = ",".join((x.get("icon") or "img") + ("*" if x.get("url") else "") for x in m["badges"])

@@ -8,7 +8,8 @@ from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFra
                              QHBoxLayout, QLabel, QLineEdit, QPushButton, QSpinBox, QVBoxLayout)
 
 from i18n import T, translate_tree
-from bindings import DEFAULT_WEIGHTS, MATCH_MODES, ROLE_LABELS, ROLES, Binding
+from bindings import ACTIONS, DEFAULT_WEIGHTS, MATCH_MODES, ROLE_LABELS, ROLES, Binding
+from input_block import split_keys
 from input_sender import VK_NAMES, parse_key, pretty_key
 
 _MOD_VKS = {0x10, 0x11, 0x12, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C}
@@ -96,9 +97,11 @@ class KeyCaptureDialog(QDialog):
 class BindingDialog(QDialog):
     """Create / edit a :class:`Binding`.  ``test_press(key, hold, repeat)`` fires a test."""
 
-    def __init__(self, binding: Binding | None, sender, parent=None, groups=None, group: str = ""):
+    def __init__(self, binding: Binding | None, sender, parent=None, groups=None, group: str = "",
+                 run_action=None):
         super().__init__(parent)
         self.sender_ = sender
+        self.run_action = run_action          # runs any trigger action (for the Test button)
         self._groups = list(groups or ["General"])
         self.setWindowTitle("New trigger" if binding is None else "Edit trigger")
         self.setMinimumWidth(520)
@@ -142,7 +145,12 @@ class BindingDialog(QDialog):
         r.addWidget(self.match, 3)
         root.addLayout(r)
 
-        self._section(root, "…press")
+        self._section(root, "…then")
+        self.action = QComboBox()
+        for k, v in ACTIONS.items():
+            self.action.addItem(v, k)
+        self.action.currentIndexChanged.connect(self._on_action)
+        root.addWidget(self.action)
         r = QHBoxLayout()
         self.key = QLineEdit()
         self.key.setPlaceholderText("Click Record, or type e.g. Ctrl+F1, Space, MouseMiddle")
@@ -151,30 +159,44 @@ class BindingDialog(QDialog):
         rec = QPushButton("⏺  Record")
         rec.clicked.connect(self._record)
         r.addWidget(rec)
+        self.key_row = r
         root.addLayout(r)
         self.key_err = QLabel("")
         self.key_err.setStyleSheet("color:#ff8a8a; font-size:12px;")
         root.addWidget(self.key_err)
 
         r = QHBoxLayout()
-        r.addWidget(QLabel("Hold for"))
+        self.hold_lbl = QLabel("Hold for")
+        r.addWidget(self.hold_lbl)
         self.hold = QSpinBox()
         self.hold.setRange(10, 5000)
         self.hold.setSuffix(" ms")
         self.hold.setToolTip("How long the key stays down. Games often need 50–150 ms.")
         r.addWidget(self.hold)
         r.addSpacing(12)
-        r.addWidget(QLabel("Repeat"))
+        self.repeat_lbl = QLabel("Repeat")
+        r.addWidget(self.repeat_lbl)
         self.repeat = QSpinBox()
         self.repeat.setRange(1, 50)
         self.repeat.setSuffix("×")
         r.addWidget(self.repeat)
+        self.dur_lbl = QLabel("For")
+        r.addWidget(self.dur_lbl)
+        self.duration = QDoubleSpinBox()
+        self.duration.setRange(0.5, 600)
+        self.duration.setDecimals(1)
+        self.duration.setSuffix(" s")
+        r.addWidget(self.duration)
         r.addStretch()
         self.test_btn = QPushButton("▶  Test in 3 s")
         self.test_btn.setToolTip("Switch to your game – the key is pressed after 3 seconds")
         self.test_btn.clicked.connect(self._test)
         r.addWidget(self.test_btn)
         root.addLayout(r)
+        self.action_hint = QLabel("")
+        self.action_hint.setWordWrap(True)
+        self.action_hint.setObjectName("muted")
+        root.addWidget(self.action_hint)
 
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
@@ -254,6 +276,9 @@ class BindingDialog(QDialog):
         i = self.match.findData(b.match)
         self.match.setCurrentIndex(max(0, i))
         self.key.setText(b.key)
+        self.action.setCurrentIndex(max(0, self.action.findData(b.action)))
+        self.duration.setValue(b.duration)
+        self._on_action()
         self.hold.setValue(b.hold_ms)
         self.repeat.setValue(b.repeat)
         for role in ROLES:
@@ -268,6 +293,50 @@ class BindingDialog(QDialog):
         self.show_key.setEnabled(b.show_progress)
         self._enabled = b.enabled
         self._set_color(b.color)
+
+    def _act(self) -> str:
+        return self.action.currentData() or "press"
+
+    def _on_action(self, *_):
+        a = self._act()
+        keyed = a in ("press", "block_key")
+        for w in (self.key, self.key_err):
+            w.setVisible(keyed)
+        for i in range(self.key_row.count()):
+            w = self.key_row.itemAt(i).widget()
+            if w:
+                w.setVisible(keyed)
+        for w in (self.hold_lbl, self.hold, self.repeat_lbl, self.repeat):
+            w.setVisible(a == "press")
+        for w in (self.dur_lbl, self.duration):
+            w.setVisible(a != "press")
+        self.dur_lbl.setText(T("Shut down after") if a == "shutdown" else T("For"))
+        if a == "shutdown":
+            self.duration.setMinimum(10)
+        else:
+            self.duration.setMinimum(0.5)
+        self.key.setPlaceholderText(T("Keys to block, e.g.  W   or   W, A, S, D   or   MouseLeft")
+                                    if a == "block_key" else
+                                    T("Click Record, or type e.g. Ctrl+F1, Space, MouseMiddle"))
+        hints = {
+            "press": "",
+            "block_key": T("These keys / mouse buttons stop working for the set time. "
+                           "Emergency: press Esc 5 times quickly to unblock everything."),
+            "block_keyboard": T("Your whole keyboard stops working for the set time (RetChat's own trigger "
+                                "presses still work). Emergency: press Esc 5 times quickly."),
+            "block_mouse": T("Mouse movement, buttons and wheel stop working for the set time. "
+                             "Emergency: press Esc 5 times quickly."),
+            "shutdown": T("⚠ Windows shuts the PC down after the delay – unsaved work is lost. "
+                          "RetChat shows a window where you can cancel it. Use a high threshold!"),
+        }
+        self.action_hint.setText(hints.get(a, ""))
+        self.action_hint.setStyleSheet("color:#ff8a8a;" if a == "shutdown" else "")
+        self.action_hint.setVisible(bool(hints.get(a)))
+        self.test_btn.setEnabled(a != "shutdown")
+        self.test_btn.setToolTip(T("Not available for shut down") if a == "shutdown" else
+                                 T("Switch to your game – the action happens after 3 seconds"))
+        self._validate_key()
+        self.adjustSize()
 
     def _set_color(self, c: str):
         self._color = c
@@ -287,7 +356,11 @@ class BindingDialog(QDialog):
 
     def _validate_key(self) -> bool:
         try:
-            if self.key.text().strip():
+            a = self._act() if hasattr(self, "action") else "press"
+            if a == "block_key":
+                for k in split_keys(self.key.text()):
+                    parse_key(k)
+            elif a == "press" and self.key.text().strip():
                 parse_key(self.key.text())
             self.key_err.setText("")
             return True
@@ -296,14 +369,20 @@ class BindingDialog(QDialog):
             return False
 
     def _test(self):
-        if not self.key.text().strip() or not self._validate_key():
+        a = self._act()
+        if a == "shutdown":
+            return
+        if a in ("press", "block_key") and (not self.key.text().strip() or not self._validate_key()):
             return
         self._count = 3
         self.test_btn.setEnabled(False)
 
         def tick():
             if self._count == 0:
-                self.sender_.press(self.key.text().strip(), self.hold.value(), self.repeat.value())
+                if self.run_action:
+                    self.run_action(self.binding())
+                else:
+                    self.sender_.press(self.key.text().strip(), self.hold.value(), self.repeat.value())
                 self.test_btn.setText(T("▶  Test in 3 s"))
                 self.test_btn.setEnabled(True)
                 return
@@ -317,7 +396,7 @@ class BindingDialog(QDialog):
             self.word.setFocus()
             self.word.setStyleSheet("border-color:#ef4444;")
             return
-        if not self.key.text().strip() or not self._validate_key():
+        if self._act() in ("press", "block_key") and (not self.key.text().strip() or not self._validate_key()):
             self.key.setFocus()
             self.key.setStyleSheet("border-color:#ef4444;")
             return
@@ -339,4 +418,5 @@ class BindingDialog(QDialog):
             show_key=self.show_key.isChecked(),
             group=self.group.currentText().strip() or "General",
             color=getattr(self, "_color", "#7c5cff"),
+            action=self._act(), duration=self.duration.value(),
         )

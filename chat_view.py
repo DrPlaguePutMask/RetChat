@@ -73,6 +73,9 @@ class ChatStyle:
     rain_triggers_only: bool = False
     rain_cooldown: float = 4.0
     rain_amount: int = 28
+    rain_screen: bool = False          # also rain over the whole screen (click-through window)
+    rain_screen_monitor: int = 0       # which monitor (index in the screen list)
+    rain_obs_chat: bool = True         # rain on the OBS chat page (the rain-only page always rains)
     anim_in: str = "side"              # side | right | left | fade | none  (new-message animation)
     fade_after: float = 0.0            # seconds before a message fades out (0 = never)
     fade_overlay_only: bool = False    # fade only in the overlay + OBS, keep messages in the app
@@ -344,9 +347,11 @@ class RainLayer(QWidget):
 
     MAX_PARTICLES = 320
 
-    def __init__(self, parent: QWidget, images: ImageCache):
+    def __init__(self, parent: QWidget, images: ImageCache, scale: float = 1.0):
         super().__init__(parent)
         self.images = images
+        self.scale = scale                 # bigger drops for the full-screen rain
+        self.on_idle = None                # called when the last drop has fallen
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
         self.parts: List[dict] = []
@@ -359,7 +364,7 @@ class RainLayer(QWidget):
         pm = self._emoji_pm.get(emoji)
         if pm is None:
             dpr = self.devicePixelRatioF() or 1.0
-            size = 64
+            size = int(64 * max(1.0, self.scale))
             pm = QPixmap(int(size * dpr), int(size * dpr))
             pm.setDevicePixelRatio(dpr)
             pm.fill(Qt.GlobalColor.transparent)
@@ -386,12 +391,13 @@ class RainLayer(QWidget):
         t0 = time.time()
         room = self.MAX_PARTICLES - len(self.parts)
         for _ in range(max(0, min(amount, room))):
-            size = random.uniform(22, 46)
+            size = random.uniform(22, 46) * self.scale
             self.parts.append({
                 "url": sym.get("url"), "emoji": sym.get("emoji"),
                 "x": random.uniform(size / 2, max(size, self.width() - size / 2)),
                 "size": size, "t0": t0 + random.uniform(0, 1.4),
-                "speed": random.uniform(150, 330), "sway": random.uniform(6, 34),
+                "speed": random.uniform(150, 330) * (1 + (self.scale - 1) * 0.6),
+                "sway": random.uniform(6, 34) * self.scale,
                 "phase": random.uniform(0, 6.28), "spin": random.uniform(-110, 110),
             })
         self.raise_()
@@ -404,6 +410,8 @@ class RainLayer(QWidget):
                       if now < q["t0"] or -q["size"] + q["speed"] * (now - q["t0"]) < h + q["size"]]
         if not self.parts:
             self._timer.stop()
+            if self.on_idle:
+                self.on_idle()
         self.update()
 
     def paintEvent(self, _):
@@ -437,6 +445,34 @@ class RainLayer(QWidget):
                 p.drawPixmap(QRectF(-s / 2, -s / 2, s, s), pm, QRectF(pm.rect()))
             p.restore()
         p.end()
+
+
+class ScreenRain(QWidget):
+    """Emoji rain over a whole monitor: a transparent, click-through, always-on-top
+    window that is only shown while drops are falling.  Shows over games in
+    borderless / windowed mode (exclusive full-screen games draw over everything)."""
+
+    def __init__(self, images: ImageCache):
+        super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
+                         | Qt.WindowType.Tool | Qt.WindowType.WindowTransparentForInput
+                         | Qt.WindowType.NoDropShadowWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setWindowTitle("RetChat rain")
+        self.layer = RainLayer(self, images, scale=1.7)
+        self.layer.on_idle = self.hide
+
+    def rain(self, sym: dict, amount: int, proxy: Optional[str] = None, screen: int = 0):
+        from PyQt6.QtGui import QGuiApplication
+        screens = QGuiApplication.screens()
+        scr = screens[screen] if 0 <= screen < len(screens) else QGuiApplication.primaryScreen()
+        geo = scr.geometry()
+        if self.geometry() != geo:
+            self.setGeometry(geo)
+        self.layer.setGeometry(0, 0, geo.width(), geo.height())
+        if not self.isVisible():
+            self.show()
+        self.layer.start(sym, int(amount * 1.5), proxy)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -548,6 +584,15 @@ class ChatView(QWidget):
     def clear_chat(self):
         self._msgs.clear()
         self.rerender()
+
+    def remove_messages(self, pred) -> None:
+        """Drop messages a moderator deleted (pred(msg) → True means remove)."""
+        n = len(self._msgs)
+        self._msgs = [m for m in self._msgs if m.get("system") or not pred(m)]
+        if len(self._msgs) != n:
+            self._items = [it for it in self._items if it.system or not pred(it.msg)]
+            self._relayout()
+            self.canvas.update()
 
     def rerender(self):
         msgs = [m for m in self._msgs if (m.get("system") or self.visible(m)) and not self._expired(m)]

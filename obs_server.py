@@ -137,6 +137,11 @@ class ObsServer:
                         m["avatar"] = data.get("avatar")
             elif event == "clear":
                 self._recent.clear()
+            elif event == "delete":                     # moderator deleted these messages
+                gone = set(data.get("ids") or [])
+                keep = [m for m in self._recent if m.get("id") not in gone]
+                self._recent.clear()
+                self._recent.extend(keep)
             line = f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
             for q in list(self._clients):
                 if q.qsize() < 500:
@@ -350,6 +355,7 @@ body:not(.bubbles) .name{display:inline-block;max-width:60%;overflow:hidden;text
 .drop{position:fixed;top:-60px;pointer-events:none;z-index:10;animation:fall linear forwards;
       font-family:'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif;line-height:1}
 .drop img{height:100%;display:block}
+body.rainonly{background:transparent!important} body.rainonly #wrap{display:none!important}
 @keyframes fall{0%{transform:translate(0,0) rotate(0)}85%{opacity:1}
   100%{transform:translate(var(--dx),calc(100vh + 120px)) rotate(var(--rot));opacity:0}}
 </style></head><body><div id="wrap"><div id="bars"></div><div id="chat"></div></div>
@@ -357,6 +363,8 @@ body:not(.bubbles) .name{display:inline-block;max-width:60%;overflow:hidden;text
 const Q=new URLSearchParams(location.search);
 const showChat=Q.get('chat')!=='0', showBars=Q.get('bars')!=='0';
 const fade=+(Q.get('fade')||0); let maxMsgs=+(Q.get('max')||0)||60;
+const RAINONLY=Q.get('rain')==='only', NORAIN=Q.get('rain')==='0';   // separate full-canvas rain source
+if(RAINONLY)document.body.classList.add('rainonly');
 const chat=document.getElementById('chat'), bars=document.getElementById('bars');
 if(!showChat) chat.style.display='none'; if(!showBars) bars.style.display='none';
 let cfg={};
@@ -400,7 +408,7 @@ function addMsg(m){
   if(m.id){if(seen.has(m.id))return; seen.add(m.id); if(seen.size>3000)seen.clear()}
   const bubbles=document.body.classList.contains('bubbles');
   const row=document.createElement('div');row.className='row';row.dir=m.rtl?'rtl':'ltr';
-  if(m.user_key)row.dataset.uk=m.user_key;
+  if(m.user_key)row.dataset.uk=m.user_key; if(m.id)row.dataset.mid=m.id;
   const d=document.createElement('div');d.className='msg'+(m.trig?' trig':'');d.dir=m.rtl?'rtl':'ltr';
   if(m.trig)d.style.setProperty('--tc',m.trig_color||'#7c5cff');
   if(m.fx){d.classList.add('fx-'+m.fx);d.style.setProperty('--fxc',m.fxc||'#a78bfa')}
@@ -461,9 +469,11 @@ function celebrate(id){const el=bars.querySelector(`[data-id="${id}"]`);if(!el)r
   el.classList.remove('glow');void el.offsetWidth;el.classList.add('glow');
   setTimeout(()=>el.classList.remove('glow'),2200)}
 function rain(r){
-  const n=Math.min(150,r.amount||28);
+  if(NORAIN||(!RAINONLY&&cfg.rain_in_chat===false))return;
+  const big=RAINONLY?Math.max(1,Math.min(3,innerHeight/600)):1;      // bigger drops on a 1080p canvas
+  const n=Math.min(220,Math.round((r.amount||28)*(RAINONLY?1.5:1)));
   for(let i=0;i<n;i++){const el=document.createElement('div');el.className='drop';
-    const size=22+Math.random()*24;el.style.left=(Math.random()*96)+'vw';
+    const size=(22+Math.random()*24)*big;el.style.left=(Math.random()*96)+'vw';el.style.top=-(size+14)+'px';
     el.style.setProperty('--dx',(Math.random()*80-40)+'px');el.style.setProperty('--rot',(Math.random()*500-250)+'deg');
     el.style.animationDuration=(2.2+Math.random()*1.8)+'s';el.style.animationDelay=(Math.random()*1.4)+'s';
     if(r.url){el.style.height=size+'px';el.append(img(via(r.url,''),'',r.name||''))}
@@ -473,10 +483,12 @@ function connect(){const es=new EventSource('/events');
   es.addEventListener('rain',e=>rain(JSON.parse(e.data)));
   es.addEventListener('avatar',e=>setAvatar(JSON.parse(e.data)));
   es.addEventListener('config',e=>applyCfg(JSON.parse(e.data)));
-  es.addEventListener('msg',e=>addMsg(JSON.parse(e.data)));
+  if(!RAINONLY)es.addEventListener('msg',e=>addMsg(JSON.parse(e.data)));
   es.addEventListener('progress',e=>renderBars(JSON.parse(e.data)));
   es.addEventListener('celebrate',e=>celebrate(JSON.parse(e.data).id));
   es.addEventListener('clear',()=>{chat.innerHTML='';seen.clear()});
+  es.addEventListener('delete',e=>{const ids=new Set(JSON.parse(e.data).ids||[]);
+    for(const row of [...chat.children])if(ids.has(row.dataset.mid))row.remove()});
   es.onerror=()=>{es.close();setTimeout(connect,2000)}}   // keep messages; replays are de-duplicated
 connect();
 </script></body></html>

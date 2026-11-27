@@ -5,14 +5,14 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[('logo/*.png', 'logo'), ('logo/app.jpg', 'logo')],
-    hiddenimports=['i18n', 'fonts', 'aiohttp', 'aiohttp_socks', 'python_socks', 'python_socks.async_.asyncio', 'truststore', 'PyQt6.QtNetwork'],
+    hiddenimports=['i18n', 'fonts', 'input_block', 'aiohttp', 'aiohttp_socks', 'python_socks', 'python_socks.async_.asyncio', 'truststore', 'PyQt6.QtNetwork'],
     excludes=['playwright', 'tkinter', 'cairosvg', 'cairocffi', 'bs4', 'lxml', 'matplotlib', 'numpy'],
     noarchive=False,
 )
 pyz = PYZ(a.pure)
 exe = EXE(
     pyz, a.scripts, a.binaries, a.datas, [],
-    name='RetChat_3.4',
+    name='RetChat_3.5',
     debug=False,
     strip=False,
     upx=True,
