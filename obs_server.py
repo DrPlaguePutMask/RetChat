@@ -268,8 +268,11 @@ body.noav .avatar{display:none}
 body:not(.bubbles) .msg{flex:1;border:var(--bw,0px) solid var(--bc,#3a4158);border-radius:6px;padding:0 4px}
 body:not(.bubbles) .msg.trig{background:color-mix(in srgb,var(--tc,#7c5cff) 24%,transparent)}
 /* bubbles: name tab on top of the message box, one smooth outline */
-body.bubbles .msg{display:flex;flex-direction:column;align-items:flex-start;text-shadow:none}
-body.bubbles .msg[dir=rtl]{align-items:flex-end}
+body.bubbles .msg{display:flex;flex-direction:column;align-items:stretch;text-shadow:none}
+/* the box stretches to the message width, which is at least name tab + corner radius, so the
+   tab never sticks out past the box (same rule as the app) */
+body.bubbles .msg .head{align-self:flex-start;margin-inline-end:var(--radius)}
+/* dir=rtl already puts the start on the right, so the name tab sits on the right edge (like the app) */
 body.bubbles .msg .sep{display:none}
 body.bubbles .msg .head{background:var(--namebg);border:var(--bw,0px) solid var(--bc,#3a4158);border-bottom:none;
      border-radius:min(var(--radius),12px) min(var(--radius),12px) 0 0;padding:3px 10px 4px;
@@ -284,6 +287,12 @@ body.bubbles .msg.trig{filter:drop-shadow(0 0 4px var(--tc)) drop-shadow(0 0 8px
 @keyframes tglow{50%{filter:drop-shadow(0 0 8px var(--tc)) drop-shadow(0 0 18px var(--tc))}}
 /* special effects for subscribers / VIP / OG */
 .msg.fx-glow{filter:drop-shadow(0 0 4px var(--fxc)) drop-shadow(0 0 8px var(--fxc))}
+/* glow-type effects also tint the outline, like the app */
+body.bubbles .msg.fx-glow .head,body.bubbles .msg.fx-glow .box,body.bubbles .msg.fx-pulse .head,
+body.bubbles .msg.fx-pulse .box,body:not(.bubbles) .msg.fx-glow,body:not(.bubbles) .msg.fx-pulse
+  {border-color:color-mix(in srgb,var(--fxc) 85%,transparent)}
+body.bubbles .msg.fx-rainbow .head,body.bubbles .msg.fx-rainbow .box,body:not(.bubbles) .msg.fx-rainbow
+  {animation:fxborder 6s linear infinite}
 .msg.fx-pulse{animation:fxpulse 2s ease-in-out infinite}
 @keyframes fxpulse{0%,100%{filter:drop-shadow(0 0 1px var(--fxc))}50%{filter:drop-shadow(0 0 7px var(--fxc)) drop-shadow(0 0 12px var(--fxc))}}
 .msg.fx-rainbow{animation:fxrain 6s linear infinite}
@@ -381,8 +390,6 @@ function addMsg(m){
   // FLIP: remember where the others are, add the row, then glide them to their new place
   const others=[...chat.children], before=new Map(others.map(k=>[k,k.getBoundingClientRect().top]));
   chat.append(row);
-  if(bubbles){const box=d.querySelector('.box');            // box at least as wide as the name tab
-    if(box&&box.offsetWidth<head.offsetWidth+14)box.style.minWidth=(head.offsetWidth+14)+'px'}
   while(chat.children.length>maxMsgs)chat.firstChild.remove();
   if(!m.old&&(cfg.anim_in||'side')!=='none')for(const k of others){if(!k.isConnected)continue;
     const dy=before.get(k)-k.getBoundingClientRect().top;

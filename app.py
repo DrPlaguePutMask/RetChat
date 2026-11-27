@@ -38,7 +38,7 @@ from connectors import PLATFORM_NAMES, PLATFORMS, ChatHub, Target, parse_target,
 from images import BADGE_STYLE, ImageCache, _logo_path, all_badge_kinds, badge_icon, platform_icon
 
 APP_NAME = "RetChat"
-VERSION = "3.2"
+VERSION = "3.3"
 SETTINGS = Path.home() / ".retchat2_settings.json"
 # Theme presets (Appearance ▸ Theme): message text, name, message box, name tab, border, chat area
 def _theme(text, user, bubble, name_bg, border, bg="#12131a", alpha=0.88):
@@ -503,7 +503,7 @@ class MainWindow(QMainWindow):
         pv.addLayout(bar)
         self.progress = ProgressStrip(self.style_.bar_height, self.style_.bar_font)
         pv.addWidget(self.progress)
-        self.view = ChatView(self.images, self.style_)
+        self.view = ChatView(self.images, self.style_, main=True)
         pv.addWidget(self.view, 1)
         self.last_lbl = label("", muted=True)
         pv.addWidget(self.last_lbl)
@@ -778,6 +778,9 @@ class MainWindow(QMainWindow):
         self.fade_spin.setToolTip("Each message fades out this many seconds after it appears (0 = never)")
         self.fade_spin.valueChanged.connect(lambda x: self._set("fade_after", float(x)))
         row("Fade out after", self.fade_spin, stretch=False)
+        self.fade_only_cb = QCheckBox("Only fade in the overlay and OBS (keep all messages in the app)")
+        self.fade_only_cb.toggled.connect(lambda on: self._set("fade_overlay_only", on))
+        v.addWidget(self.fade_only_cb)
 
         self.dir_box = QComboBox()
         self.dir_box.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
@@ -969,6 +972,9 @@ class MainWindow(QMainWindow):
         self.bw_lbl.setText(f"{st.border_width}px")
         self.anim_box.setCurrentIndex(max(0, self.anim_box.findData(st.anim_in)))
         self.fade_spin.setValue(int(st.fade_after))
+        self.fade_only_cb.blockSignals(True)
+        self.fade_only_cb.setChecked(st.fade_overlay_only)
+        self.fade_only_cb.blockSignals(False)
         self.ns_sl.setValue(int(round(st.name_scale * 100)))
         self.ns_lbl.setText(f"{int(round(st.name_scale * 100))}%")
         self.barh_sl.setValue(st.bar_height)

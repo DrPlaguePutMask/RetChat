@@ -168,7 +168,7 @@ A **trigger** presses a key when chat types a word enough times. Every matching 
 | **Name size** | Name size compared with the message text. |
 | **Corner roundness / Border thickness** | Shape of the message boxes. |
 | **New message** | How new messages appear (slide in from their side / right / left, fade in, none). Older messages glide up. |
-| **Fade out after** | Each message disappears after this many seconds (*never* = keep). |
+| **Fade out after** | Each message disappears after this many seconds (*never* = keep). Tick **Only fade in the overlay and OBS** to keep every message in the app window. |
 | **Text direction** | Automatic per message, always right-to-left, or always left-to-right. |
 | **Messages shown** | Only the newest N messages are shown (e.g. 5). |
 | **Show …** | Viewer name colours, platform icons, badges, time, older messages, bot messages, profile pictures. |
@@ -186,6 +186,7 @@ A **trigger** presses a key when chat types a word enough times. Every matching 
 | **⧉ Overlay** | Opens a transparent, always-on-top chat window. Drag it to move; resize from the corner. |
 | **🔓 / 🔒** | Locks the overlay so clicks go through it to the game underneath. Click again to unlock. |
 | **💾** | Saves the chat as a JSON file. |
+| **Links / right-click** | In the app window, links in messages are clickable (they open in your browser). Right-click a message to **copy the message, its text or its link**. (Not in the overlay or OBS.) |
 | **🧹** | Clears the chat. |
 | **Progress bars** | Bars of active triggers. They animate, and glow in their colour when a trigger fires. |
 

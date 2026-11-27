@@ -23,13 +23,16 @@ from typing import Dict, List, Optional
 
 from PyQt6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QTimer, QUrl, QVariantAnimation
 from PyQt6.QtGui import (QAbstractTextDocumentLayout, QColor, QConicalGradient, QFont, QFontMetricsF,
-                         QLinearGradient, QMovie, QPainter, QPainterPath,
+                         QDesktopServices, QLinearGradient, QMovie, QPainter, QPainterPath,
                          QPalette, QPen, QPixmap, QTextBlockFormat, QTextCharFormat, QTextCursor,
                          QTextDocument, QTextImageFormat, QTextOption)
-from PyQt6.QtWidgets import QFrame, QScrollArea, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QApplication, QFrame, QMenu, QScrollArea, QVBoxLayout, QWidget
 
 from images import ImageCache, badge_icon, platform_icon
+from i18n import T
 
+# web links in chat (trailing punctuation like "," "." ")" "،" is not part of the link)
+URL_RE = re.compile(r"(?:https?://|www\.)[^\s<>\"]*[^\s<>\".,!?;:)\]}'»،؟]", re.I)
 RTL_RE = re.compile("[֑-ࣿיִ-﷽ﹰ-ﻼ]")
 LTR_RE = re.compile(r"[A-Za-z]")
 # one emoji "character" incl. flags, skin tones, variation selectors and ZWJ sequences
@@ -72,6 +75,7 @@ class ChatStyle:
     rain_amount: int = 28
     anim_in: str = "side"              # side | right | left | fade | none  (new-message animation)
     fade_after: float = 0.0            # seconds before a message fades out (0 = never)
+    fade_overlay_only: bool = False    # fade only in the overlay + OBS, keep messages in the app
     border_width: int = 1              # border around each message (0 = none)
     border_color: str = "#3a4158"
     name_scale: float = 0.8            # name size relative to the message text
@@ -182,6 +186,49 @@ class _Canvas(QWidget):
         super().__init__()
         self.view = view
         self.setAutoFillBackground(False)
+        self.setMouseTracking(view.main)
+
+    # links + copy are only for the main app window (not the overlay)
+    def mouseMoveEvent(self, e):
+        v = self.view
+        if not v.main:
+            return
+        pos = e.position()
+        it = v.item_at(pos)
+        href = v.link_at(it, pos) if it else None
+        self.setCursor(Qt.CursorShape.PointingHandCursor if href else Qt.CursorShape.ArrowCursor)
+        self.setToolTip(href or "")
+
+    def mousePressEvent(self, e):
+        v = self.view
+        if v.main and e.button() == Qt.MouseButton.LeftButton:
+            it = v.item_at(e.position())
+            href = v.link_at(it, e.position()) if it else None
+            if href:
+                v.open_link(href)
+                return
+        super().mousePressEvent(e)
+
+    def contextMenuEvent(self, e):
+        v = self.view
+        if not v.main:
+            return
+        pos = QPointF(e.pos())
+        it = v.item_at(pos)
+        if it is None:
+            return
+        href = v.link_at(it, pos)
+        m = it.msg
+        menu = QMenu(self)
+        menu.addAction(T("Copy message"), lambda: v.copy(f"{m.get('username', '?')}: {m.get('text', '')}"))
+        menu.addAction(T("Copy text"), lambda: v.copy(m.get("text", "")))
+        links = URL_RE.findall(m.get("text", ""))
+        if href or links:
+            target = href or links[0]
+            menu.addSeparator()
+            menu.addAction(T("Copy link"), lambda: v.copy(target))
+            menu.addAction(T("Open link"), lambda: v.open_link(target))
+        menu.exec(e.globalPos())
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -401,8 +448,9 @@ class ChatView(QWidget):
     ENTRY = 0.38       # seconds for the slide/fade-in
     FADE = 0.8         # seconds for the fade-out
 
-    def __init__(self, images: ImageCache, style: ChatStyle, parent=None):
+    def __init__(self, images: ImageCache, style: ChatStyle, parent=None, main: bool = False):
         super().__init__(parent)
+        self.main = main          # main app window: links + copy, and may skip fading
         self.setObjectName("chatView")
         self.images = images
         self.style_ = style
@@ -917,11 +965,30 @@ class ChatView(QWidget):
         cur.insertText("⁨", tf)
         for part in m.get("parts") or [{"type": "text", "text": m.get("text", "")}]:
             if part["type"] == "text":
-                cur.insertText(part["text"], tf)
+                if self.main:
+                    self._insert_with_links(cur, part["text"], tf)
+                else:
+                    cur.insertText(part["text"], tf)
             elif part["type"] == "emote":
                 self._url_img(it, it.doc, cur, part["url"], emo, part.get("name", ""), proxy)
         cur.insertText("⁩", tf)
         return it
+
+    @staticmethod
+    def _insert_with_links(cur: QTextCursor, text: str, tf: QTextCharFormat):
+        pos = 0
+        for m in URL_RE.finditer(text):
+            if m.start() > pos:
+                cur.insertText(text[pos:m.start()], tf)
+            lf = QTextCharFormat(tf)
+            lf.setAnchor(True)
+            lf.setAnchorHref(m.group(0))
+            lf.setForeground(QColor("#60a5fa"))
+            lf.setFontUnderline(True)
+            cur.insertText(m.group(0), lf)
+            pos = m.end()
+        if pos < len(text):
+            cur.insertText(text[pos:], tf)
 
     def _badge(self, it, doc, cur, b: dict, size: int, proxy) -> bool:
         if b.get("url"):
@@ -1006,8 +1073,42 @@ class ChatView(QWidget):
         if changed:
             self._positions()
 
+    def _fade(self) -> float:
+        """Fade time for this view (0 in the app window when fading is overlay/OBS only)."""
+        st = self.style_
+        return 0.0 if (self.main and st.fade_overlay_only) else st.fade_after
+
+    def item_at(self, pos: QPointF) -> Optional[_Item]:
+        for it in reversed(self._items):
+            if it.system:
+                continue
+            y = it.yd if it.yd is not None else it.y
+            if QRectF(it.x, y, it.w, it.h).contains(pos):
+                return it
+        return None
+
+    def link_at(self, it: Optional[_Item], pos: QPointF) -> Optional[str]:
+        if it is None:
+            return None
+        y = it.yd if it.yd is not None else it.y
+        px, py = self._pads(it)
+        if self.style_.layout == "bubbles" and it.head is not None:
+            origin = QPointF(it.x + px, y + it.th - 1 + py)
+        else:
+            origin = QPointF(it.x + px, y + py)
+        return it.doc.documentLayout().anchorAt(pos - origin) or None
+
+    @staticmethod
+    def open_link(href: str):
+        url = href if href.lower().startswith(("http://", "https://")) else "https://" + href
+        QDesktopServices.openUrl(QUrl(url))
+
+    @staticmethod
+    def copy(text: str):
+        QApplication.clipboard().setText(text)
+
     def _expired(self, m: dict) -> bool:
-        fa = self.style_.fade_after
+        fa = self._fade()
         return fa > 0 and time.time() - m.get("_shown_at", time.time()) > fa + self.FADE
 
     def _anim_state(self, it: _Item, now: float):
@@ -1025,8 +1126,9 @@ class ChatView(QWidget):
                     else:
                         sign = 1 if st.anim_in == "right" else -1
                     dx = (1 - e) * 80 * sign
-        if st.fade_after > 0:
-            over = now - it.born - st.fade_after
+        fa = self._fade()
+        if fa > 0:
+            over = now - it.born - fa
             if over > 0:
                 a *= max(0.0, 1 - over / self.FADE)
         return a, dx
@@ -1050,10 +1152,10 @@ class ChatView(QWidget):
                 it.yd = it.y
             if it.anim and now - it.born < self.ENTRY:
                 active = True
-            if st.fade_after > 0 and now - it.born > st.fade_after:
+            if self._fade() > 0 and now - it.born > self._fade():
                 active = True
-        if st.fade_after > 0:                        # drop messages that finished fading
-            gone = [it for it in self._items if now - it.born > st.fade_after + self.FADE]
+        if self._fade() > 0:                         # drop messages that finished fading
+            gone = [it for it in self._items if now - it.born > self._fade() + self.FADE]
             if gone:
                 ids = {id(it.msg) for it in gone}
                 self._items = [it for it in self._items if id(it.msg) not in ids]
@@ -1072,7 +1174,7 @@ class ChatView(QWidget):
     def _tick(self):
         if not self.isVisible() or not self._items:
             return
-        fa = self.style_.fade_after
+        fa = self._fade()
         if fa > 0 and any(time.time() - it.born > fa for it in self._items):
             self._kick()
         vr = self.scroll.viewport().rect().translated(0, self.scroll.verticalScrollBar().value())

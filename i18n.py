@@ -37,6 +37,11 @@ FA = {
     "Size": "اندازه",
     "Layout": "چیدمان",
     "Theme": "تم",
+    "Only fade in the overlay and OBS (keep all messages in the app)": "فقط در اورلی و OBS محو شود (همه‌ی پیام‌ها در برنامه بمانند)",
+    "Copy message": "کپی پیام",
+    "Copy text": "کپی متن",
+    "Copy link": "کپی لینک",
+    "Open link": "باز کردن لینک",
     "Special effects": "جلوه‌های ویژه",
     "Subscribers, VIPs and OG users can get an effect on their messages. Pick one per site.":
         "پیام مشترک‌ها، VIPها و کاربران OG می‌تواند جلوه‌ی ویژه داشته باشد. برای هر سایت یکی انتخاب کنید.",
