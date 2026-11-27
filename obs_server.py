@@ -242,7 +242,7 @@ html,body{margin:0;padding:0;background:transparent;overflow:hidden;font-family:
       background:var(--bg);border-radius:10px;padding:6px 12px}
 .row{display:flex;align-items:flex-start;gap:8px;margin-top:calc(var(--gap) + 6px);max-width:100%;
      align-self:flex-start;animation:var(--inanim,fadein) .38s cubic-bezier(.2,.8,.2,1) both}
-.row[dir=rtl]{flex-direction:row-reverse;align-self:flex-end}
+.row[dir=rtl]{align-self:flex-end}   /* dir=rtl already lays the row out right-to-left: avatar on the right */
 body:not(.bubbles) .row{align-self:stretch;margin-top:var(--gap)}
 .row.out{transition:opacity .8s;opacity:0}
 @keyframes inL{from{opacity:0;transform:translateX(-80px)}to{opacity:1;transform:none}}
@@ -282,6 +282,26 @@ body.bubbles .msg.trig .head,body.bubbles .msg.trig .box{border-color:var(--tc)}
 body.bubbles .msg.trig{filter:drop-shadow(0 0 4px var(--tc)) drop-shadow(0 0 8px var(--tc));
      animation:tglow .8s ease-in-out .38s 3}
 @keyframes tglow{50%{filter:drop-shadow(0 0 8px var(--tc)) drop-shadow(0 0 18px var(--tc))}}
+/* special effects for subscribers / VIP / OG */
+.msg.fx-glow{filter:drop-shadow(0 0 4px var(--fxc)) drop-shadow(0 0 8px var(--fxc))}
+.msg.fx-pulse{animation:fxpulse 2s ease-in-out infinite}
+@keyframes fxpulse{0%,100%{filter:drop-shadow(0 0 1px var(--fxc))}50%{filter:drop-shadow(0 0 7px var(--fxc)) drop-shadow(0 0 12px var(--fxc))}}
+.msg.fx-rainbow{animation:fxrain 6s linear infinite}
+@keyframes fxrain{0%,100%{filter:drop-shadow(0 0 6px #ff4d4d)}17%{filter:drop-shadow(0 0 6px #ffb84d)}
+  33%{filter:drop-shadow(0 0 6px #e8ff4d)}50%{filter:drop-shadow(0 0 6px #4dff88)}
+  67%{filter:drop-shadow(0 0 6px #4dc3ff)}83%{filter:drop-shadow(0 0 6px #b84dff)}}
+body.bubbles .msg.fx-rborder .head,body.bubbles .msg.fx-rborder .box,body:not(.bubbles) .msg.fx-rborder
+  {border-width:2px;animation:fxborder 3s linear infinite}
+@keyframes fxborder{0%,100%{border-color:#ff4d4d}17%{border-color:#ffb84d}33%{border-color:#e8ff4d}
+  50%{border-color:#4dff88}67%{border-color:#4dc3ff}83%{border-color:#b84dff}}
+body.bubbles .msg.fx-shine .box,body:not(.bubbles) .msg.fx-shine{position:relative;overflow:hidden}
+body.bubbles .msg.fx-shine .box::after,body:not(.bubbles) .msg.fx-shine::after{content:"";position:absolute;
+  top:0;bottom:0;width:40%;left:-60%;pointer-events:none;
+  background:linear-gradient(105deg,transparent,rgba(255,255,255,.3),transparent);animation:fxshine 3.2s ease-in-out infinite}
+@keyframes fxshine{0%{left:-60%}28%,100%{left:120%}}
+/* long names: one line with … */
+body:not(.bubbles) .name{display:inline-block;max-width:60%;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;vertical-align:bottom}
 /* emoji / emote rain */
 .drop{position:fixed;top:-60px;pointer-events:none;z-index:10;animation:fall linear forwards;
       font-family:'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif;line-height:1}
@@ -330,6 +350,7 @@ function addMsg(m){
   if(m.user_key)row.dataset.uk=m.user_key;
   const d=document.createElement('div');d.className='msg'+(m.trig?' trig':'');d.dir=m.rtl?'rtl':'ltr';
   if(m.trig)d.style.setProperty('--tc',m.trig_color||'#7c5cff');
+  if(m.fx){d.classList.add('fx-'+m.fx);d.style.setProperty('--fxc',m.fxc||'#a78bfa')}
   const replyEl=()=>{const r=document.createElement('span');r.className='reply';
     const b=document.createElement('bdi');b.textContent=(m.reply.user?'@'+m.reply.user+': ':'')+(m.reply.text||'').slice(0,70);
     r.append('↪ ',b);return r};

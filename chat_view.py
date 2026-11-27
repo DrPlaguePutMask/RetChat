@@ -18,11 +18,12 @@ import math
 import random
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from PyQt6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QTimer, QUrl, QVariantAnimation
-from PyQt6.QtGui import (QAbstractTextDocumentLayout, QColor, QFont, QMovie, QPainter, QPainterPath,
+from PyQt6.QtGui import (QAbstractTextDocumentLayout, QColor, QConicalGradient, QFont, QFontMetricsF,
+                         QLinearGradient, QMovie, QPainter, QPainterPath,
                          QPalette, QPen, QPixmap, QTextBlockFormat, QTextCharFormat, QTextCursor,
                          QTextDocument, QTextImageFormat, QTextOption)
 from PyQt6.QtWidgets import QFrame, QScrollArea, QVBoxLayout, QWidget
@@ -75,6 +76,8 @@ class ChatStyle:
     border_color: str = "#3a4158"
     name_scale: float = 0.8            # name size relative to the message text
     show_avatars: bool = True          # profile pictures
+    # special effects per site and role, e.g. {"kick": {"og": "rainbow", "vip": "glow"}}
+    effects: dict = field(default_factory=dict)
 
     def to_dict(self):
         return dict(self.__dict__)
@@ -105,6 +108,30 @@ def _readable(color: Optional[str], fallback: str) -> str:
     return c.name()
 
 
+FX_CODES = ("none", "glow", "pulse", "rainbow", "rborder", "shine")
+FX_COLORS = {"og": "#fbbf24", "vip": "#f472b6", "sub": "#a78bfa"}
+FX_ROLES = ("sub", "vip", "og")
+FX_ANIMATED = {"pulse", "rainbow", "rborder", "shine"}
+
+
+def effect_for(msg: dict, effects: dict):
+    """(effect, colour) for a message from its site + role, or (None, None).
+
+    OG beats VIP beats Subscriber when someone has several."""
+    eff = (effects or {}).get(msg.get("platform", ""), {}) or {}
+    if not eff:
+        return None, None
+    icons = {b.get("icon") for b in msg.get("badges") or []}
+    roles = set(msg.get("role") or [])
+    for key, has in (("og", bool(icons & {"og", "kick_og"})),
+                     ("vip", "vip" in roles or bool(icons & {"vip", "kick_vip"})),
+                     ("sub", "subscription" in roles)):
+        code = eff.get(key, "none")
+        if has and code and code != "none":
+            return code, FX_COLORS[key]
+    return None, None
+
+
 def rain_symbol(msg: dict) -> Optional[dict]:
     """First emote (``{"url": …}``) or emoji (``{"emoji": …}``) in a message, if any."""
     for p in msg.get("parts") or []:
@@ -119,7 +146,7 @@ def rain_symbol(msg: dict) -> Optional[dict]:
 
 class _Item:
     __slots__ = ("msg", "doc", "head", "urls", "rtl", "system", "x", "y", "w", "h", "tw", "th",
-                 "ax", "av", "born", "glow", "yd", "anim", "cache", "shp", "avpm")
+                 "ax", "av", "born", "glow", "yd", "anim", "cache", "shp", "avpm", "fx", "fxc", "nm", "fhw")
 
     def __init__(self, msg: dict):
         self.msg = msg
@@ -140,6 +167,10 @@ class _Item:
         self.cache: Optional[QPixmap] = None          # text drawn once; repaints just copy it
         self.shp = None                               # cached outline paths (relative to the item)
         self.avpm: Optional[tuple] = None             # cached round avatar (state, pixmap)
+        self.fx: Optional[str] = None                 # special effect (sub / VIP / OG)
+        self.fxc: Optional[str] = None
+        self.nm: Optional[str] = None                 # shortened name in use (None = full name)
+        self.fhw = 0.0                                # name-tab width with the full name
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -195,8 +226,11 @@ class _Canvas(QWidget):
                     it.shp = v._shapes(it, 0.0, 0.0)
                 _tab, _body, shape, tab_path, body_path = it.shp
                 p.translate(it.x + dx, y)
+                fx = it.fx
                 if glow:
                     self._glow(p, shape, QColor(it.glow), v._glow_strength(it, now))
+                elif fx in ("glow", "pulse", "rainbow"):
+                    self._glow(p, shape, v._fx_color(it, now), v._fx_strength(it, now))
                 p.fillPath(body_path, bub)
                 p.fillPath(tab_path, tabc)
                 if glow:
@@ -205,20 +239,37 @@ class _Canvas(QWidget):
                     p.setPen(QPen(c, 1.6))
                     p.setBrush(Qt.BrushStyle.NoBrush)
                     p.drawPath(shape)
+                elif fx == "rborder":
+                    v._rainbow_border(p, shape, now)
+                elif fx in ("glow", "pulse", "rainbow"):
+                    c = v._fx_color(it, now)
+                    c.setAlphaF(0.85)
+                    p.setPen(QPen(c, 1.4))
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+                    p.drawPath(shape)
                 elif st.border_width > 0:
                     p.setPen(QPen(border, st.border_width))
                     p.setBrush(Qt.BrushStyle.NoBrush)
                     p.drawPath(shape)                  # one outline – no line where tab meets box
+                if fx == "shine":
+                    v._shine(p, shape, it, now)
                 p.drawPixmap(QPointF(0, 0), v._text_pixmap(it, ctx))
             else:
                 r = QRectF(it.x + dx, y, it.w, it.h)
+                line = QPainterPath()
+                line.addRoundedRect(r, 6, 6)
+                fx = it.fx
                 if glow:
                     c = QColor(it.glow)
                     c.setAlphaF(0.22)
-                    path = QPainterPath()
-                    path.addRoundedRect(r, 6, 6)
-                    p.fillPath(path, c)
-                if st.border_width > 0:
+                    p.fillPath(line, c)
+                elif fx in ("glow", "pulse", "rainbow"):
+                    self._glow(p, line, v._fx_color(it, now), v._fx_strength(it, now) * 0.7)
+                if fx == "rborder" and not glow:
+                    v._rainbow_border(p, line, now)
+                elif fx == "shine":
+                    v._shine(p, line, it, now)
+                if st.border_width > 0 and not (fx == "rborder" and not glow):
                     p.setPen(QPen(border, st.border_width))
                     p.setBrush(Qt.BrushStyle.NoBrush)
                     hw = st.border_width / 2
@@ -508,10 +559,18 @@ class ChatView(QWidget):
         av = 0 if it.system else self._av_size()
         avgap = 8 if av else 0
         inner = max(40.0, avail - 2 * self.SIDE - av - avgap - 2 * px)
+        if not it.system:                          # shorten names that don't fit with …
+            full = it.msg.get("username", "?")
+            fm = QFontMetricsF(self._name_font())
+            if st.layout == "bubbles":
+                room = inner - (it.fhw - fm.horizontalAdvance(full)) - 4
+            else:
+                room = inner * 0.6
+            self._apply_name(it, self._fit_name(full, room, fm))
         it.doc.setTextWidth(inner)
         if st.layout == "bubbles" and not it.system:
             hx, hy = self._tab_pad()
-            it.head.setTextWidth(inner)
+            it.head.setTextWidth(-1)
             hw = min(inner, math.ceil(it.head.idealWidth()) + 2)
             it.head.setTextWidth(hw)
             it.tw = hw + 2 * hx
@@ -565,6 +624,66 @@ class ChatView(QWidget):
         p.end()
         it.cache = pm
         return pm
+
+    def _name_font(self) -> QFont:
+        st = self.style_
+        f = QFont(st.font_family)
+        f.setPointSizeF(max(6.0, round(st.font_size * st.name_scale, 1)))
+        f.setBold(True)
+        return f
+
+    @staticmethod
+    def _fit_name(full: str, room: float, fm: QFontMetricsF) -> Optional[str]:
+        """None if the full name fits, otherwise the name cut with … to fit *room*."""
+        if fm.horizontalAdvance(full) <= room:
+            return None
+        return fm.elidedText(full, Qt.TextElideMode.ElideRight, max(room, fm.horizontalAdvance("…") * 3))
+
+    def _apply_name(self, it: _Item, name: Optional[str]):
+        if name == it.nm:
+            return
+        fresh = self._build(it.msg, name=name)
+        it.doc, it.head, it.urls, it.nm = fresh.doc, fresh.head, fresh.urls, name
+
+    @staticmethod
+    def _seed(it: _Item) -> float:
+        return (it.born * 7.31) % 1.0
+
+    def _fx_color(self, it: _Item, now: float) -> QColor:
+        if it.fx == "rainbow":
+            return QColor.fromHsvF((now * 0.12 + self._seed(it)) % 1.0, 0.75, 1.0)
+        return QColor(it.fxc or "#a78bfa")
+
+    def _fx_strength(self, it: _Item, now: float) -> float:
+        if it.fx == "pulse":
+            return 0.25 + 0.5 * (0.5 + 0.5 * math.sin(now * 3.2 + self._seed(it) * 6.28))
+        return 0.6 if it.fx == "rainbow" else 0.5
+
+    @staticmethod
+    def _rainbow_border(p: QPainter, shape: QPainterPath, now: float):
+        r = shape.boundingRect()
+        g = QConicalGradient(r.center(), (now * 120) % 360)
+        for i, h in enumerate((0.0, 0.16, 0.33, 0.5, 0.66, 0.83, 1.0)):
+            g.setColorAt(i / 6, QColor.fromHsvF(h % 1.0, 0.85, 1.0))
+        p.setPen(QPen(g, 2.2))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(shape)
+
+    def _shine(self, p: QPainter, shape: QPainterPath, it: _Item, now: float):
+        period = 3.2
+        phase = ((now + self._seed(it) * period) % period) / 0.9   # sweep takes 0.9 s, then rests
+        if phase >= 1:
+            return
+        r = shape.boundingRect()
+        x = r.left() - r.width() * 0.4 + phase * r.width() * 1.8
+        g = QLinearGradient(x, r.top(), x + r.width() * 0.35, r.bottom())
+        g.setColorAt(0.0, QColor(255, 255, 255, 0))
+        g.setColorAt(0.5, QColor(255, 255, 255, 80))
+        g.setColorAt(1.0, QColor(255, 255, 255, 0))
+        p.save()
+        p.setClipPath(shape)
+        p.fillRect(r, g)
+        p.restore()
 
     def _shapes(self, it: _Item, x: float, y: float):
         """Name tab + message box as one outline (no seam where they meet)."""
@@ -688,7 +807,7 @@ class ChatView(QWidget):
             return platform in ("aparat", "onefa")
         return rtl > ltr
 
-    def _new_doc(self, rtl: bool) -> QTextDocument:
+    def _new_doc(self, rtl: bool, wrap: bool = True) -> QTextDocument:
         st = self.style_
         doc = QTextDocument()
         doc.setDocumentMargin(0)
@@ -698,15 +817,20 @@ class ChatView(QWidget):
         doc.setDefaultFont(base)
         opt = QTextOption()
         opt.setTextDirection(Qt.LayoutDirection.RightToLeft if rtl else Qt.LayoutDirection.LeftToRight)
-        opt.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        opt.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere if wrap
+                        else QTextOption.WrapMode.NoWrap)
         doc.setDefaultTextOption(opt)
         return doc
 
-    def _build(self, m: dict) -> _Item:
+    def _build(self, m: dict, name: Optional[str] = None) -> _Item:
+        """*name* replaces the user name (used to shorten long names with …)."""
         st = self.style_
         it = _Item(m)
+        it.nm = name
         it.rtl = False if it.system else self.is_rtl(m)
         it.glow = (m.get("_trigger_color") or "#7c5cff") if m.get("_trigger") else None
+        if not it.system:
+            it.fx, it.fxc = effect_for(m, st.effects)
         it.doc = self._new_doc(it.rtl)
         proxy = m.get("proxy") or None
         if it.av and st.show_avatars:
@@ -762,17 +886,20 @@ class ChatView(QWidget):
                 for b in m.get("badges") or []:
                     if self._badge(it, doc_for_images, c, b, ico, proxy):
                         c.insertText(" ", fmt(st.color_text, name_fs))
-            c.insertText(mark + "⁨" + m.get("username", "?") + "⁩" + mark, fmt(ucol, name_fs, bold=True))
+            shown = name if name is not None else m.get("username", "?")
+            c.insertText(mark + "⁨" + shown + "⁩" + mark, fmt(ucol, name_fs, bold=True))
 
         if bubbles:
-            # name tab: [platform] [badges] name [time]
-            it.head = self._new_doc(it.rtl)
+            # name tab: [platform] [badges] name [time]  – one line, never wraps
+            it.head = self._new_doc(it.rtl, wrap=False)
             hc = QTextCursor(it.head)
             hc.setBlockFormat(blk())
             header(hc, it.head)
             if st.show_time:
                 hc.insertText("  " + time.strftime("%H:%M", time.localtime(m.get("ts", time.time()))),
                               fmt(st.color_reply, max(7, name_fs - 2)))
+            if name is None:
+                it.fhw = it.head.idealWidth()          # width the tab needs with the full name
             # message box: [reply] text
             if has_reply:
                 cur.insertText(reply_text(), fmt(st.color_reply, max(8, fs - 2), italic=True))
@@ -953,7 +1080,7 @@ class ChatView(QWidget):
         for it in self._items:
             if it.y + it.h < vr.top() or it.y > vr.bottom():
                 continue
-            dirty = bool(it.glow and now - it.born < 2.5 and self.style_.highlight_triggers)
+            dirty = bool(it.glow and now - it.born < 2.5 and self.style_.highlight_triggers) or it.fx in FX_ANIMATED
             for name, url in it.urls.items():
                 img = self.images._imgs.get(url)
                 if isinstance(img, QMovie):

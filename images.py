@@ -229,13 +229,121 @@ def _draw(bg: str, glyph: str, fg: str, size: int, round_: bool) -> QPixmap:
     return pm
 
 
+# Kick-style badges: Kick's colour gradients with a dark symbol on top.
+# The symbols are RetChat's own drawings (not Kick's artwork).
+KICK_STYLE = {
+    #  kind                gradient from / to     glyph      shape
+    "kick_moderator":   ("#00c7ff", "#0095ff", "gavel",   "square"),
+    "kick_verified":    ("#1eff00", "#00ff8c", "check",   "seal"),
+    "kick_founder":     ("#ffd84d", "#ffa31a", "star",    "square"),
+    "kick_vip":         ("#ffb000", "#ff7a00", "crown",   "square"),   # Kick shows VIP as a crown
+    "kick_og":          ("#00f0ff", "#00ff8c", "OG",      "square"),
+    "kick_broadcaster": ("#ff6a4a", "#c70c00", "play",    "square"),
+    "kick_staff":       ("#c58bff", "#7b2cff", "star",    "square"),
+    "kick_sub_gifter":  ("#53fc18", "#32970e", "gift",    "square"),
+    "kick_subscriber":  ("#deb2ff", "#bc66ff", "star",    "square"),
+}
+
+
+def _draw_kick(c1: str, c2: str, glyph: str, shape: str, size: int) -> QPixmap:
+    from PyQt6.QtGui import QLinearGradient, QPen, QTransform
+    scale = 2
+    s = size * scale
+    pm = QPixmap(s, s)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    g = QLinearGradient(0, 0, s, s)
+    g.setColorAt(0, QColor(c1))
+    g.setColorAt(1, QColor(c2))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(g)
+    m = s * 0.04
+    if shape == "seal":                          # scalloped round seal
+        path = QPainterPath()
+        n, c = 12, s / 2
+        import math
+        for i in range(n * 2 + 1):
+            a = math.pi * i / n - math.pi / 2
+            rad = (s / 2 - m) * (1.0 if i % 2 == 0 else 0.84)
+            pt = QPointF(c + rad * math.cos(a), c + rad * math.sin(a))
+            path.moveTo(pt) if i == 0 else path.lineTo(pt)
+        path.closeSubpath()
+        p.drawPath(path)
+    else:
+        p.drawRoundedRect(QRectF(m, m, s - 2 * m, s - 2 * m), s * 0.2, s * 0.2)
+    ink = QColor("#0b0b0b")
+    p.setBrush(ink)
+    c = s / 2
+    if glyph == "gavel":
+        p.save()
+        p.translate(c, c)
+        p.rotate(-45)
+        p.drawRoundedRect(QRectF(-s * 0.22, -s * 0.30, s * 0.44, s * 0.17), s * 0.03, s * 0.03)   # head
+        p.drawRect(QRectF(-s * 0.045, -s * 0.15, s * 0.09, s * 0.42))                           # handle
+        p.restore()
+        p.drawRoundedRect(QRectF(s * 0.20, s * 0.74, s * 0.34, s * 0.07), s * 0.02, s * 0.02)   # block
+    elif glyph == "check":
+        pen = QPen(ink, s * 0.11)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPolyline(QPolygonF([QPointF(s * 0.30, s * 0.52), QPointF(s * 0.44, s * 0.65), QPointF(s * 0.70, s * 0.36)]))
+    elif glyph == "crown":
+        p.drawPolygon(QPolygonF([QPointF(s * 0.22, s * 0.68), QPointF(s * 0.18, s * 0.32), QPointF(s * 0.36, s * 0.48),
+                                 QPointF(s * 0.50, s * 0.24), QPointF(s * 0.64, s * 0.48), QPointF(s * 0.82, s * 0.32),
+                                 QPointF(s * 0.78, s * 0.68)]))
+        p.drawRect(QRectF(s * 0.22, s * 0.71, s * 0.56, s * 0.07))
+    elif glyph == "diamond":
+        p.drawPolygon(QPolygonF([QPointF(s * 0.30, s * 0.30), QPointF(s * 0.70, s * 0.30), QPointF(s * 0.82, s * 0.43),
+                                 QPointF(c, s * 0.80), QPointF(s * 0.18, s * 0.43)]))
+    elif glyph == "play":
+        p.drawPolygon(QPolygonF([QPointF(c - s * 0.15, c - s * 0.22), QPointF(c - s * 0.15, c + s * 0.22),
+                                 QPointF(c + s * 0.23, c)]))
+    elif glyph == "gift":
+        p.drawRect(QRectF(s * 0.24, s * 0.46, s * 0.52, s * 0.30))      # box
+        p.drawRect(QRectF(s * 0.20, s * 0.34, s * 0.60, s * 0.11))      # lid
+        p.setBrush(QColor(c2))
+        p.drawRect(QRectF(c - s * 0.04, s * 0.34, s * 0.08, s * 0.42))  # ribbon
+        p.setBrush(ink)
+        p.drawEllipse(QRectF(s * 0.34, s * 0.20, s * 0.14, s * 0.14))
+        p.drawEllipse(QRectF(s * 0.52, s * 0.20, s * 0.14, s * 0.14))
+    elif glyph == "star":
+        import math
+        pts = []
+        for i in range(10):
+            a = math.pi * i / 5 - math.pi / 2
+            rad = s * (0.32 if i % 2 == 0 else 0.14)
+            pts.append(QPointF(c + rad * math.cos(a), c + s * 0.03 + rad * math.sin(a)))
+        p.drawPolygon(QPolygonF(pts))
+    else:                                        # text glyph, e.g. "OG"
+        p.setPen(ink)
+        f = QFont("Segoe UI")
+        f.setBold(True)
+        f.setPixelSize(int(s * 0.46))
+        p.setFont(f)
+        p.drawText(QRectF(0, 0, s, s), Qt.AlignmentFlag.AlignCenter, glyph)
+    p.end()
+    pm.setDevicePixelRatio(scale)
+    return pm
+
+
+def all_badge_kinds():
+    return list(BADGE_STYLE) + list(KICK_STYLE)
+
+
 def badge_icon(kind: str, size: int = 18) -> Optional[QPixmap]:
+    k = ("b", kind, size)
+    if k in _icon_cache:
+        return _icon_cache[k]
+    if kind in KICK_STYLE:
+        _icon_cache[k] = _draw_kick(*KICK_STYLE[kind], size)
+        return _icon_cache[k]
     st = BADGE_STYLE.get(kind)
     if not st:
         return None
-    k = ("b", kind, size)
-    if k not in _icon_cache:
-        _icon_cache[k] = _draw(*st, size, round_=False)
+    _icon_cache[k] = _draw(*st, size, round_=False)
     return _icon_cache[k]
 
 

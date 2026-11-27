@@ -12,7 +12,7 @@ a = Analysis(
 pyz = PYZ(a.pure)
 exe = EXE(
     pyz, a.scripts, a.binaries, a.datas, [],
-    name='RetChat_3.1',
+    name='RetChat_3.2',
     debug=False,
     strip=False,
     upx=True,

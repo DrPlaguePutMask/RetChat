@@ -173,6 +173,7 @@ A **trigger** presses a key when chat types a word enough times. Every matching 
 | **Messages shown** | Only the newest N messages are shown (e.g. 5). |
 | **Show …** | Viewer name colours, platform icons, badges, time, older messages, bot messages, profile pictures. |
 | **Glow on messages that count toward a trigger** | Those messages glow in the trigger's colour. |
+| **Special effects** | Per site, give **Subscribers**, **VIPs** and **OG** users an effect on their messages: Glow, Pulse, Rainbow glow, Rainbow border or Shine (or none). |
 | **Emoji rain** | A message's emoji or GIF emote rains over the chat (optionally only for trigger messages), with amount and a wait between rains. |
 | **Bot names** | Names treated as bots. |
 | **Progress bars** | Bar height and text size. |

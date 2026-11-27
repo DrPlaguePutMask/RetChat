@@ -763,10 +763,13 @@ class KickConnector(BaseConnector):
             types.add(t)
             if t == "subscriber":
                 url = self._sub_badge(int(b.get("count") or 1))
-                badges.append({"url": url, "icon": "subscriber",
+                badges.append({"url": url, "icon": "kick_subscriber",
                                "title": f"Subscriber ({b.get('count', 1)} mo)"})
             else:
-                badges.append({"url": None, "icon": t, "title": b.get("text") or t})
+                # Kick-style icon when we have one (kick_moderator, kick_vip, kick_og, …)
+                from images import KICK_STYLE
+                icon = f"kick_{t}" if f"kick_{t}" in KICK_STYLE else t
+                badges.append({"url": None, "icon": icon, "title": b.get("text") or t})
         for b in ident.get("badges_v2") or []:
             if b.get("image_url") and b.get("name") not in types:
                 lvl = (b.get("metadata") or {}).get("level")

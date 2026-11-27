@@ -31,20 +31,23 @@ import theme
 from i18n import T, translate_tree
 from binding_dialog import BindingDialog
 from bindings import DEFAULT_BOTS, Binding, BindingManager, bot_names, is_bot
-from chat_view import ChatStyle, ChatView, _readable, rain_symbol
+from chat_view import FX_ROLES, ChatStyle, ChatView, _readable, effect_for, rain_symbol
 from obs_server import ObsServer
 from progress import GlowBar, ProgressStrip
-from connectors import PLATFORM_NAMES, ChatHub, Target, parse_target, proxy_label, resolve_proxy
-from images import BADGE_STYLE, ImageCache, _logo_path, badge_icon, platform_icon
+from connectors import PLATFORM_NAMES, PLATFORMS, ChatHub, Target, parse_target, proxy_label, resolve_proxy
+from images import BADGE_STYLE, ImageCache, _logo_path, all_badge_kinds, badge_icon, platform_icon
 
 APP_NAME = "RetChat"
-VERSION = "3.1"
+VERSION = "3.2"
 SETTINGS = Path.home() / ".retchat2_settings.json"
 # Theme presets (Appearance ▸ Theme): message text, name, message box, name tab, border, chat area
 def _theme(text, user, bubble, name_bg, border, bg="#12131a", alpha=0.88):
     return {"color_text": text, "color_user": user, "bubble_bg": bubble, "name_bg": name_bg,
             "border_color": border, "bg": bg, "bubble_alpha": alpha}
 
+
+FX_LABELS = (("none", "None"), ("glow", "Glow"), ("pulse", "Pulse"), ("rainbow", "Rainbow glow"),
+             ("rborder", "Rainbow border"), ("shine", "Shine"))
 
 THEMES = [
     ("Midnight", _theme("#e6e8ef", "#7cc4ff", "#1d2130", "#2a3046", "#3a4158")),
@@ -819,6 +822,37 @@ class MainWindow(QMainWindow):
         self.rain_cd_sl, self.rain_cd_lbl = pct_slider("Wait between rains", "rain_cooldown", 0, 60, 1, "s")
         v.addSpacing(8)
 
+        v.addWidget(label("Special effects", "h2"))
+        fx_hint = label("Subscribers, VIPs and OG users can get an effect on their messages. Pick one per site.",
+                        muted=True)
+        fx_hint.setWordWrap(True)
+        v.addWidget(fx_hint)
+        from PyQt6.QtWidgets import QGridLayout
+        fxg = QGridLayout()
+        fxg.setHorizontalSpacing(6)
+        fxg.setVerticalSpacing(4)
+        for col, title in enumerate(("Sub", "VIP", "OG"), start=1):
+            fxg.addWidget(label(title, muted=True), 0, col, Qt.AlignmentFlag.AlignCenter)
+        self.fx_boxes = {}
+        for r_, plat in enumerate(PLATFORMS, start=1):
+            ic = QLabel()
+            ic.setPixmap(platform_icon(plat, 20))
+            ic.setToolTip(PLATFORM_NAMES[plat])
+            fxg.addWidget(ic, r_, 0)
+            for col, role in enumerate(FX_ROLES, start=1):
+                if role == "og" and plat not in ("kick", "onefa"):
+                    fxg.addWidget(label("–", muted=True), r_, col, Qt.AlignmentFlag.AlignCenter)
+                    continue
+                cb = QComboBox()
+                cb.setObjectName("small")
+                for code, text in FX_LABELS:
+                    cb.addItem(text, code)
+                cb.currentIndexChanged.connect(lambda _, p_=plat, ro=role, c_=cb: self._set_fx(p_, ro, c_.currentData()))
+                fxg.addWidget(cb, r_, col)
+                self.fx_boxes[(plat, role)] = cb
+        v.addLayout(fxg)
+        v.addSpacing(8)
+
         self.bot_edit = QLineEdit(DEFAULT_BOTS)
         self.bot_edit.setToolTip("Names treated as bots (comma separated). Names of 7+ letters ending "
                                  "in 'bot' and platform-marked bots are detected automatically.")
@@ -955,6 +989,10 @@ class MainWindow(QMainWindow):
             w.blockSignals(False)
         for k, b in self.color_btns.items():
             b.setStyleSheet(f"background:{getattr(st, k)}; border:1px solid #3a4158; border-radius:6px;")
+        for (plat, role), cb in self.fx_boxes.items():
+            cb.blockSignals(True)
+            cb.setCurrentIndex(max(0, cb.findData((st.effects or {}).get(plat, {}).get(role, "none"))))
+            cb.blockSignals(False)
 
     def _set(self, key, value):
         setattr(self.style_, key, value)
@@ -976,7 +1014,7 @@ class MainWindow(QMainWindow):
     def _render_icons(self) -> Dict[str, bytes]:
         from PyQt6.QtCore import QBuffer, QIODevice
         out = {}
-        for kind in BADGE_STYLE:
+        for kind in all_badge_kinds():
             pm = badge_icon(kind, 36)
             buf = QBuffer()
             buf.open(QIODevice.OpenModeFlag.WriteOnly)
@@ -1087,6 +1125,7 @@ class MainWindow(QMainWindow):
             "rtl": self.view.is_rtl(m),
             "trig": bool(m.get("_trigger") and st.highlight_triggers),
             "trig_color": m.get("_trigger_color") or "#7c5cff",
+            **dict(zip(("fx", "fxc"), effect_for(m, st.effects))),
             "proxy": m.get("proxy") or "",
             "avatar": m.get("avatar") or "",
             "user_key": m.get("user_key") or "",
@@ -1101,6 +1140,11 @@ class MainWindow(QMainWindow):
                 out.append({"id": str(id(b)), "color": b.color, "acc": min(b.acc, b.threshold),
                             "threshold": b.threshold, "label": b.bar_label()})
         self.obs.publish("progress", out)
+
+    def _set_fx(self, plat: str, role: str, code: str):
+        eff = {k: dict(v_) for k, v_ in (self.style_.effects or {}).items()}
+        eff.setdefault(plat, {})[role] = code
+        self._set("effects", eff)
 
     def apply_theme(self, theme_: dict):
         for k, val in theme_.items():
