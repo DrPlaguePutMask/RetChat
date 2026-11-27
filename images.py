@@ -237,7 +237,7 @@ KICK_STYLE = {
     "kick_verified":    ("#1eff00", "#00ff8c", "check",   "seal"),
     "kick_founder":     ("#ffd84d", "#ffa31a", "star",    "square"),
     "kick_vip":         ("#ffb000", "#ff7a00", "crown",   "square"),   # Kick shows VIP as a crown
-    "kick_og":          ("#00f0ff", "#00ff8c", "OG",      "square"),
+    "kick_og":          ("#00e5ff", "#c6ff3d", "ogstack", "dark"),     # gradient O/G letters on dark
     "kick_broadcaster": ("#ff6a4a", "#c70c00", "play",    "square"),
     "kick_staff":       ("#c58bff", "#7b2cff", "star",    "square"),
     "kick_sub_gifter":  ("#53fc18", "#32970e", "gift",    "square"),
@@ -259,6 +259,26 @@ def _draw_kick(c1: str, c2: str, glyph: str, shape: str, size: int) -> QPixmap:
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(g)
     m = s * 0.04
+    if shape == "dark":                          # dark tile, the gradient goes on the glyph instead
+        p.setBrush(QColor("#141414"))
+        p.drawRoundedRect(QRectF(m, m, s - 2 * m, s - 2 * m), s * 0.2, s * 0.2)
+        if glyph == "ogstack":
+            f = QFont("Segoe UI")
+            f.setBold(True)
+            f.setPixelSize(int(s * 0.5))
+            path = QPainterPath()
+            path.addText(0, 0, f, "O")
+            path2 = QPainterPath()
+            path2.addText(0, 0, f, "G")
+            for pp, cy in ((path, s * 0.30), (path2, s * 0.70)):    # O on top, G below
+                br = pp.boundingRect()
+                pp.translate(s / 2 - br.center().x(), cy - br.center().y())
+            p.setBrush(g)
+            p.drawPath(path)
+            p.drawPath(path2)
+        p.end()
+        pm.setDevicePixelRatio(scale)
+        return pm
     if shape == "seal":                          # scalloped round seal
         path = QPainterPath()
         n, c = 12, s / 2

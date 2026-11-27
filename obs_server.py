@@ -21,6 +21,7 @@ from typing import Dict, Optional, Set
 import aiohttp
 from aiohttp import web
 
+import fonts
 from connectors import UA, make_tcp_connector
 
 CACHE_DIR = Path.home() / ".ret_chat_cache" / "img2"     # shared with the app's image cache
@@ -72,11 +73,14 @@ class ObsServer:
                 app.router.add_get("/img", self._img)
                 app.router.add_get("/logo/{name}", self._logo)
                 app.router.add_get("/icon/{name}", self._icon)
+                app.router.add_get("/font/{key}", self._font)
                 self._runner = web.AppRunner(app, access_log=None)
                 await self._runner.setup()
                 await web.TCPSite(self._runner, "0.0.0.0" if lan else "127.0.0.1", port).start()
                 self.port = port
                 self.lan = lan
+                # find installed font files in the background, then resend the config with the font
+                asyncio.get_running_loop().run_in_executor(None, self._fonts_then_config)
             except OSError as exc:
                 ok, msg = False, f"Port {port} is in use or blocked ({exc.strerror or exc})"
                 self.port = None
@@ -104,6 +108,9 @@ class ObsServer:
 
     # ── publishing (call from any thread) ────────────────────────────────────
     def publish(self, event: str, data):
+        if event == "config":                         # attach the chosen font's files (index lookup is quick)
+            data = self._with_font(dict(data))
+
         def _go():
             if event == "config":
                 self._config = data
@@ -208,6 +215,31 @@ class ObsServer:
         return web.Response(body=p.read_bytes(), content_type="image/png",
                             headers={"Cache-Control": "max-age=86400"})
 
+    def _fonts_then_config(self):
+        fonts.build_index()
+        if self._config:
+            self.publish("config", self._config)
+
+    def _with_font(self, cfg: dict) -> dict:
+        """Attach the chosen font's files so the page can load them with @font-face."""
+        if not hasattr(self, "_font_files"):
+            self._font_files = {}
+        files = []
+        for path, weight, style in fonts.resolve(cfg.get("font_family", "")):
+            key = hashlib.sha1(path.encode("utf-8")).hexdigest()[:16]
+            self._font_files[key] = path
+            files.append({"url": f"/font/{key}", "weight": weight, "style": style})
+        cfg["font_files"] = files
+        return cfg
+
+    async def _font(self, request):
+        path = getattr(self, "_font_files", {}).get(request.match_info["key"])
+        if not path or not Path(path).exists():
+            raise web.HTTPNotFound()
+        ext = Path(path).suffix.lower()
+        return web.Response(body=Path(path).read_bytes(), content_type=fonts.MIME.get(ext, "font/ttf"),
+                            headers={"Cache-Control": "max-age=86400", "Access-Control-Allow-Origin": "*"})
+
     async def _icon(self, request):
         name = Path(request.match_info["name"]).stem
         data = self.icons.get(name)
@@ -244,7 +276,10 @@ html,body{margin:0;padding:0;background:transparent;overflow:hidden;font-family:
      align-self:flex-start;animation:var(--inanim,fadein) .38s cubic-bezier(.2,.8,.2,1) both}
 .row[dir=rtl]{align-self:flex-end}   /* dir=rtl already lays the row out right-to-left: avatar on the right */
 body:not(.bubbles) .row{align-self:stretch;margin-top:var(--gap)}
-.row.out{transition:opacity .8s;opacity:0}
+/* fade-out is an animation so it replaces the held slide-in animation (a plain opacity
+   change would be overridden by it and the message would just vanish) */
+.row.out{animation:fadeout .8s ease forwards}
+@keyframes fadeout{from{opacity:1}to{opacity:0}}
 @keyframes inL{from{opacity:0;transform:translateX(-80px)}to{opacity:1;transform:none}}
 @keyframes inR{from{opacity:0;transform:translateX(80px)}to{opacity:1;transform:none}}
 @keyframes fadein{from{opacity:0}to{opacity:1}}
@@ -329,7 +364,16 @@ function img(src,cls,title,fallback){const i=document.createElement('img');i.src
   if(title)i.title=title;if(fallback)i.onerror=()=>{i.onerror=null;i.src=fallback};return i}
 function via(u,p){return '/img?u='+encodeURIComponent(u)+'&p='+encodeURIComponent(p||'')}
 function applyCfg(c){cfg=c||{};const r=document.documentElement.style;
-  if(c.font_family)r.setProperty('--font',`'${c.font_family}','Segoe UI',sans-serif`);
+  if(c.font_files&&c.font_files.length){            // RetChat sends the font file itself
+    let fs=document.getElementById('rcfont');
+    if(!fs){fs=document.createElement('style');fs.id='rcfont';document.head.append(fs)}
+    fs.textContent=c.font_files.map(f=>`@font-face{font-family:'RetChatFont';src:url('${f.url}');`+
+      `font-weight:${f.weight};font-style:${f.style};font-display:block}`).join('');
+    r.setProperty('--font',`'RetChatFont','${c.font_family}','Segoe UI',sans-serif`);
+  } else if(c.font_family){
+    const old=document.getElementById('rcfont'); if(old)old.remove();      // don't keep the previous font
+    r.setProperty('--font',`'${c.font_family}','Segoe UI',sans-serif`);
+  }
   if(c.font_size)r.setProperty('--size',(c.font_size*1.333).toFixed(1)+'px');
   if(c.color_text)r.setProperty('--text',c.color_text); if(c.color_user)r.setProperty('--user',c.color_user);
   if(c.bar_height)r.setProperty('--barh',c.bar_height+'px'); if(c.bar_font)r.setProperty('--barfont',c.bar_font+'px');

@@ -38,7 +38,7 @@ from connectors import PLATFORM_NAMES, PLATFORMS, ChatHub, Target, parse_target,
 from images import BADGE_STYLE, ImageCache, _logo_path, all_badge_kinds, badge_icon, platform_icon
 
 APP_NAME = "RetChat"
-VERSION = "3.3"
+VERSION = "3.4"
 SETTINGS = Path.home() / ".retchat2_settings.json"
 # Theme presets (Appearance ▸ Theme): message text, name, message box, name tab, border, chat area
 def _theme(text, user, bubble, name_bg, border, bg="#12131a", alpha=0.88):
